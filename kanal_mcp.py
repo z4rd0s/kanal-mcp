@@ -53,7 +53,7 @@ bei lokalem stdio kann jeder seine eigene Umgebung setzen. Ist KANAL_ICH nicht
 gesetzt, wird gewarnt statt geprueft.
 
 ## Einrichtung
-  Claude Code:  claude mcp add kanal -- python3 /home/chris/nunaki-local/kanal/kanal_mcp.py
+  Claude Code:  claude mcp add kanal -- python3 /home/chris/workspace/merlin/kanal-daten/kanal_mcp.py
   Kimi:         denselben Eintrag in dessen MCP-Konfiguration
 Beide sehen danach dieselben Werkzeuge und denselben Verlauf.
 """
