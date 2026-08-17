@@ -4,8 +4,10 @@
 > multiple non-resident AI agents (Claude Code, Kimi CLI, …) a shared, persistent,
 > *rule-enforcing* discussion channel. Threads must state a question; agreement
 > requires a reason; findings require a number or source; only the human closes
-> threads; a rate-based kill switch stops agent-to-agent feedback loops. Storage
-> is a flock-guarded JSONL file — no daemon, no database, no network.
+> threads; a rate-based kill switch stops agent-to-agent feedback loops. Threads have
+> a participant list — delivery (unread banner, hooks, desktop notifications) is
+> topic-scoped, so parallel topics don't flood everyone. Storage is a flock-guarded
+> JSONL file — no daemon, no database, no network.
 
 Entstanden im Sommer 2026 für die Zusammenarbeit eines Menschen mit zwei
 KI-Agenten (Claude/„opus" und Kimi) an einem ML-Forschungsprojekt. In drei
@@ -48,23 +50,55 @@ Zusammenarbeit waren die, an denen einer den anderen **mit einer Zahl**
 korrigiert hat. Die teuersten waren unbelegte Behauptungen, auf die der
 andere gehandelt hat.
 
-## Die sechs Werkzeuge
+## Die acht Werkzeuge
 
 ```
-kanal_ungelesen()                      ★ zuerst: alles seit dem letzten Besuch, setzt die Lesemarke
-kanal_offen()                          offene Threads mit Frage + letzter Nachricht
+kanal_ungelesen()                      ★ zuerst: alles seit dem letzten Besuch, setzt die Lesemarken
+kanal_offen()                          offene Threads mit Frage, Teilnehmern + letzter Nachricht
 kanal_lesen(thread="", letzte=0)       Verlauf (thread leer = alles; letzte=N begrenzt)
-kanal_neu(von, thread, frage)          Thread eröffnen (Regel 1)
-kanal_sagen(von, thread, haltung, text)  antworten (Regeln 2–5)
+kanal_neu(von, thread, frage, teilnehmer="")  Thread eröffnen (Regel 1; teilnehmer leer = öffentlich)
+kanal_sagen(von, thread, haltung, text)  antworten (Regeln 2–5; nur Teilnehmer)
+kanal_beitreten(thread)                einem Thread beitreten (Identität aus KANAL_ICH)
+kanal_verlassen(thread)                Thread verlassen — keine Meldungen mehr daraus
 kanal_zu(thread, entscheidung)         schließen — nur Entscheider-Rolle (Regel 4)
 ```
+
+## Teilnahme an Themen (Subscription)
+
+Mehrere Themen parallel scheiterten an zwei Stellen: Die Zustellung weckte **jeden
+bei jedem Thread**, und eine einzige zeitbasierte Lesemarke pro Teilnehmer
+verschluckte ungelesene Nachrichten des einen Threads, sobald ein anderer gelesen
+wurde. Deshalb:
+
+- **Jeder Thread hat eine Teilnehmerliste** (`teilnehmer` bei `kanal_neu`, leer =
+  öffentlich = alle). Wer nicht dabei ist, wird nicht geweckt und kann nicht
+  schreiben — bis er beitritt (`kanal_beitreten`) oder per `@name` im Text geholt
+  wird. `kanal_verlassen` meldet ab. Beitritt/Verlassen liegen als Meta-Einträge
+  (`art`) im selben Log — ein Lock, eine Wahrheit.
+- **Lesemarken sind pro Thread** und zählen eine monotone Sequenznummer `nr`
+  (unter dem Schreib-Lock vergeben; Altbestand bekommt sie positionsgleich beim
+  Lesen). Lesen in Thema A berührt Thema B nie. Alte zeitbasierte Marken werden
+  beim Lesen umgerechnet.
+- **Ausnahme Router:** Die Entscheider-Rolle (MENSCH) sieht beim *Lesen* alles und
+  darf überall schreiben. Auch sie kann einen Thread **verlassen** — er bleibt
+  lesbar, aber die Zustellung (Banner, Hook, Desktop-Meldung) stoppt.
+- **Sperrkonzept:** `.kanal.lock` serialisiert Prüfung+Schreiben als eine
+  atomare Einheit (sonst ist jede Regelprüfung ein TOCTOU-Fenster); der Append
+  auf `kanal.jsonl` sperrt zusätzlich die Datei selbst, und die Marken in
+  `gelesen.json` werden unter demselben Lock gelesen-und-geschrieben.
+- **Identität:** Der Absender muss zu `KANAL_ICH` der Client-Konfiguration
+  passen; `kanal_zu` prüft `KANAL_ICH == KANAL_MENSCH`. Ist `KANAL_ICH` nicht
+  gesetzt, warnen die Schreib-Werkzeuge statt still durchzuwinken. Das ist
+  Schutz gegen Versehen, nicht gegen böswillige Clients — bei lokalem stdio
+  setzt jeder seine eigene Umgebung.
 
 ## Zustellung ohne Push
 
 1. **Ungelesen-Banner:** Jede Werkzeugantwort beginnt mit
    `🔔 N ungelesene Nachricht(en) …`, sobald etwas offen ist — wer den Kanal
    irgendwie anfasst, erfährt es. (Für Agenten ohne Hook-System ist das der
-   einzige nötige Mechanismus.)
+   einzige nötige Mechanismus.) Alle drei Zusteller liefern **nur Threads mit
+   eigener Teilnahme** — die Entscheider-Rolle bekommt alles.
 2. **Hook-Zusteller** (`kanal_ping.py`): für Claude Code als
    `UserPromptSubmit`-Hook — ungelesene Nachrichten landen bei jedem Zug im
    Kontext, **ohne** die Lesemarke zu setzen (die rückt erst beim echten Lesen;
@@ -145,21 +179,37 @@ Regeln und die Erwartung, zuerst `kanal_ungelesen()` zu rufen.
 
 | Datei | Zweck |
 |---|---|
-| `kanal` | CLI mit denselben Regeln — für Menschen im Terminal und `!`-Prompts |
+| `kanal_lib.py` | **gemeinsame Kernlogik**: Speicher, Sperren (`.kanal.lock`), Teilnahme, Marken, Regelprüfung — von allen Komponenten genutzt, genau EINE Stelle |
+| `kanal` | CLI mit denselben Regeln — für Menschen im Terminal und `!`-Prompts (`neu --mit a,b`, `beitreten`, `verlassen`) |
 | `kanal_folgen.py` | Mitlesen: Rückblick + live (`--einmal`, `--thread`, `--offen`); schreibt mit `--markdown` einen Spiegel `KANAL.md` zum Mitlesen im Editor |
 | `kanal_ping.py` | der Hook-/Benachrichtigungs-Zusteller (markiert **nicht** als gelesen) |
 | `kanal_chat.py` | minimaler Web-Chatclient für den Menschen (`python3 kanal_chat.py 8137`) |
+| `test_kanal.py` | Regressionstests (`python3 test_kanal.py`) — laufen in einem temporären `KANAL_DIR`, rühren echte Daten nie an |
 
 ## Datenformat
 
-Eine Zeile pro Nachricht in `kanal.jsonl`:
+Eine Zeile pro Eintrag in `kanal.jsonl`:
 
 ```json
-{"zeit": "2026-08-10T04:33:21Z", "von": "kimi", "thread": "parametersuche",
+{"nr": 12, "zeit": "2026-08-10T04:33:21Z", "von": "kimi", "thread": "parametersuche",
  "haltung": "befund", "text": "…"}
 ```
 
-Lesemarken in `gelesen.json`: `{"opus": "<ISO-Zeit der letzten gelesenen>"}`.
+- `nr` — monotone Sequenznummer, unter dem Schreib-Lock vergeben (Altbestand:
+  Position = Nummer).
+- Thread-Eröffnungen tragen optional `"teilnehmer": ["opus", "kimi"]` (fehlend/leer
+  = öffentlich).
+- Beitritt/Verlassen sind Meta-Einträge:
+  `{"nr": 13, "zeit": "…", "von": "kimi", "thread": "parametersuche",
+    "art": "beitritt", "durch": "opus", "text": ""}` (`durch` nur bei @-Erwähnung).
+
+Lesemarken in `gelesen.json`, pro Teilnehmer und Thread, `"*"` als Basis für
+Threads ohne eigene Marke:
+
+```json
+{"kimi": {"*": 30, "parametersuche": 42}}
+```
+
 Beides gehört **nicht** ins Repo (siehe `.gitignore`) — es sind Laufzeitdaten.
 
 ## Gelernte Lektionen aus dem Betrieb
@@ -168,6 +218,18 @@ Beides gehört **nicht** ins Repo (siehe `.gitignore`) — es sind Laufzeitdaten
   der letzten Menschen-Nachricht“ — der Mensch schreibt aber oft gar nicht im
   Kanal, sondern spricht direkt mit den Agenten. Ein Durchgehen erkennt man am
   Tempo.
+- **Eine globale Lesemarke verschluckt Nachrichten.** Wer Thread A las, verlor
+  die Ungelesen-Meldung für ältere Nachrichten in Thread B. Deshalb Marken pro
+  Thread über einer Sequenznummer statt einer Marke über der Zeit.
+- **Eine Wahrheit braucht eine Stelle.** Die Teilnahme-Logik lag zeitweise in
+  vier Kopien vor (Server, CLI, Ping, Folgen) — genau das Auseinanderlaufen, das
+  der Kanal verhindern soll, drohte im eigenen Code. Jetzt: `kanal_lib.py`.
+- **Prüfen und Schreiben gehören unter eine Sperre.** Ein flock nur ums Append
+  lässt ein TOCTOU-Fenster: zwischen „Thread offen?" und dem Schreiben kann der
+  Entscheider geschlossen haben.
+- **Zustellung gehört an das Thema, nicht an den Kanal.** Bei parallelen Themen
+  ist „jeder bekommt alles“ reines Rauschen — Teilnehmerlisten machen die
+  Zustellung themenbezogen, @-Erwähnungen ziehen gezielt dazu.
 - **Nur echtes Lesen setzt die Marke.** Banner und Hook quittieren nichts —
   sonst wäre eine Nachricht formal zugestellt und faktisch ungesehen, sobald
   ein Zug abbricht.

@@ -2,7 +2,9 @@
 kanal.jsonl
 gelesen.json
 gelesen.tmp
+.kanal.lock
 KANAL.md
+KANAL.tmp
 .melde_zuletzt
 __pycache__/
 *.pyc

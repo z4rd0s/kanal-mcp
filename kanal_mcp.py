@@ -15,7 +15,7 @@ strukturierte Fehler zurück und gelten für beide gleich.
   opus   baut und misst. Code, Cluster, Zahlen.
   kimi   prueft und widerspricht. Plan, Logik, Zirkelschluesse.
 
-## Regeln (vom Server geprüft, nicht erhofft)
+## Regeln (vom Server geprüft, nicht erhofft — die Prüfung selbst liegt in kanal_lib)
   1. Kein Thread ohne Frage.
   2. Antworten brauchen eine HALTUNG. Bloßes Zustimmen ohne Grund wird abgelehnt.
   3. Ein `befund` braucht eine Zahl oder Quelle — sonst als `frage` posten oder
@@ -28,6 +28,30 @@ an denen einer den anderen mit einer ZAHL korrigiert hat (TTS-Destillier-Falle,
 Zirkelschluss beim Zellen-Tiebreak, Angleichung-vs-Angemessenheit). Die teuersten
 Stellen waren unbelegte Behauptungen, auf die der andere gehandelt hat.
 
+## Teilnahme an Themen (Subscription)
+Mehrere Themen parallel gingen an zwei Stellen kaputt: die Zustellung weckte JEDEN bei
+JEDEM Thread, und eine einzige zeitbasierte Lesemarke pro Teilnehmer verschluckte
+ungelesene Nachrichten des einen Threads, sobald der andere gelesen wurde. Deshalb:
+
+  * Jeder Thread hat eine TEILNEHMERLISTE (bei kanal_neu, leer = öffentlich = alle).
+    Wer nicht dabei ist, wird nicht geweckt und kann nicht schreiben — bis er beitritt
+    (kanal_beitreten) oder per @name im Text geholt wird. kanal_verlassen meldet ab.
+  * Nachrichten tragen eine monotone Sequenznummer `nr`; Lesemarken sind PRO THREAD.
+    Lesen in Thema A beruehrt Thema B nie.
+  * Ausnahme Router: der MENSCH sieht beim LESEN alles und darf ueberall schreiben.
+    Auch er kann einen Thread VERLASSEN — dann bleibt er lesbar, aber die Zustellung
+    (Banner, Hook, Desktop-Meldung) zu diesem Thema stoppt.
+
+Die ganze Mechanik (Speicher, Sperren, Teilnahme, Marken, Regelpruefung) liegt in
+kanal_lib.py — EINE Stelle, von Server, CLI, Ping, Folgen und Chat gemeinsam genutzt.
+
+## Identität
+Der Absender kommt aus KANAL_ICH der Client-Konfiguration; ein abweichender
+`von`-Parameter wird abgelehnt. kanal_zu prueft ICH == MENSCH. Das ist Schutz gegen
+Unfaelle (opus antwortet versehentlich als chris), nicht gegen boeswillige Clients —
+bei lokalem stdio kann jeder seine eigene Umgebung setzen. Ist KANAL_ICH nicht
+gesetzt, wird gewarnt statt geprueft.
+
 ## Einrichtung
   Claude Code:  claude mcp add kanal -- python3 /home/chris/nunaki-local/kanal/kanal_mcp.py
   Kimi:         denselben Eintrag in dessen MCP-Konfiguration
@@ -36,66 +60,21 @@ Beide sehen danach dieselben Werkzeuge und denselben Verlauf.
 from __future__ import annotations
 
 import calendar
-import fcntl
 import functools
-import json
 import os
+import re
 import subprocess
 import sys
 import time
-from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
-ROOT = Path(os.environ.get("KANAL_DIR") or Path(__file__).resolve().parent)
-LOG = ROOT / "kanal.jsonl"
-GELESEN = ROOT / "gelesen.json"
-# Teilnehmer und Entscheider-Rolle sind konfigurierbar:
-#   KANAL_WER="chris,opus,kimi"   Teilnehmerliste (kommagetrennt)
-#   KANAL_MENSCH="chris"          wer entscheidet/Threads schliesst (Vorgabe: erster Eintrag)
-WER = tuple(w.strip().lower() for w in
-            (os.environ.get("KANAL_WER") or "chris,opus,kimi").split(",") if w.strip())
-MENSCH = (os.environ.get("KANAL_MENSCH") or WER[0]).strip().lower()
-HALTUNG = ("zustimmung", "widerspruch", "frage", "befund", "entscheidung")
+import kanal_lib as lib
+from kanal_lib import ICH, MENSCH, WER
 
-# Wer bin ich? Kommt aus der MCP-Konfiguration des jeweiligen Clients:
-#   "env": {"KANAL_ICH": "opus"}   bzw.   "kimi"
-# Ohne das kann der Server nicht wissen, WEM er ungelesene Nachrichten anzeigen soll —
-# die Werkzeuge kanal_lesen/kanal_offen tragen keinen Absender.
-ICH = (os.environ.get("KANAL_ICH") or "").strip().lower() or None
+ROOT = lib.ROOT
 
 mcp = FastMCP("kanal")
-
-
-def _jetzt() -> str:
-    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-
-
-def _lade() -> list:
-    if not LOG.exists():
-        return []
-    with LOG.open(encoding="utf-8") as f:
-        fcntl.flock(f, fcntl.LOCK_SH)
-        try:
-            return [json.loads(x) for x in f if x.strip()]
-        finally:
-            fcntl.flock(f, fcntl.LOCK_UN)
-
-
-def _anhaengen(rec: dict) -> None:
-    LOG.parent.mkdir(parents=True, exist_ok=True)
-    with LOG.open("a", encoding="utf-8") as f:
-        # Exklusive Sperre: zwei Agenten gleichzeitig ist hier der Normalfall, nicht
-        # der Sonderfall. Ohne flock verliert man Zeilen bei parallelem Schreiben.
-        fcntl.flock(f, fcntl.LOCK_EX)
-        try:
-            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
-            f.flush()
-            os.fsync(f.fileno())
-        finally:
-            fcntl.flock(f, fcntl.LOCK_UN)
-    _melden(rec)
-    _spiegeln()
 
 
 def _spiegeln() -> None:
@@ -112,7 +91,7 @@ def _spiegeln() -> None:
         pass
 
 
-def _melden(rec: dict) -> None:
+def _melden(rec: dict, raus: dict) -> None:
     """Desktop-Meldung an Chris, sobald eine Nachricht eintrifft.
 
     Das ist das fehlende Stueck der Zustellkette: Opus bekommt ungelesene Nachrichten per
@@ -120,11 +99,15 @@ def _melden(rec: dict) -> None:
     naechste Mal laufen. Chris ist derjenige, der sie startet. Ohne diese Meldung muesste
     er raten, wann es etwas zu holen gibt.
 
-    Laeuft im schreibenden Client, also genau einmal pro Nachricht. Eigene Nachrichten von
-    chris loesen nichts aus. Best effort: ohne Desktop-Sitzung gibt es kein notify-send,
-    und ein Fehler hier darf den Kanal nie blockieren.
+    Themenbezogen wie der Rest der Zustellung: hat Chris einen Thread VERLASSEN, meldet
+    er ihn nicht mehr — lesen kann er ihn weiterhin. Laeuft im schreibenden Client, also
+    genau einmal pro Nachricht. Eigene Nachrichten von chris loesen nichts aus.
+    Best effort: ohne Desktop-Sitzung gibt es kein notify-send, und ein Fehler hier darf
+    den Kanal nie blockieren.
     """
     if rec.get("von") == MENSCH:
+        return
+    if MENSCH in raus.get(rec.get("thread"), ()):   # verlassener Thread bleibt stumm
         return
     # Drosseln: wer drei Nachrichten hintereinander schreibt, loest sonst drei Popups aus —
     # und der Mensch sieht dem Schreibenden in der Regel gerade zu. Eine Meldung pro
@@ -147,38 +130,15 @@ def _melden(rec: dict) -> None:
         pass
 
 
-def _marken() -> dict:
-    if not GELESEN.exists():
-        return {}
-    try:
-        return json.loads(GELESEN.read_text(encoding="utf-8"))
-    except Exception:  # noqa: BLE001 — eine kaputte Marke darf den Kanal nicht blockieren
-        return {}
-
-
-def _marke_setzen(wer: str, bis: str) -> None:
-    m = _marken()
-    if m.get(wer, "") >= bis:
-        return
-    m[wer] = bis
-    tmp = GELESEN.with_suffix(".tmp")
-    tmp.write_text(json.dumps(m, ensure_ascii=False, indent=1), encoding="utf-8")
-    tmp.replace(GELESEN)          # atomar, damit ein paralleler Leser nie halbe Daten sieht
-
-
-def _ungelesen(wer: str, msgs: list | None = None) -> list:
-    """Nachrichten NACH der Lesemarke, eigene ausgenommen.
-
-    Ein echter Push ist bei MCP nicht moeglich: das Protokoll ist client-getrieben, und
-    weder Kimi noch Opus laufen dauerhaft — ein Server kann kein Modell wecken, das
-    gerade nicht existiert. Was geht, ist Zustellung beim NAECHSTEN Zug. Dafuer muss der
-    Server wissen, was schon gesehen wurde. Genau das ist die Lesemarke.
-    """
-    if not wer:
-        return []
-    msgs = _lade() if msgs is None else msgs
-    marke = _marken().get(wer, "")
-    return [m for m in msgs if m["zeit"] > marke and m["von"] != wer]
+def _zustellen(recs: list, raus: dict) -> None:
+    """Nach dem Schreiben, AUSSERHALB der Sperre: Desktop-Meldung + Spiegel.
+    Meta-Eintraege (beitritt/verlassen) loesen keine Meldung aus — die zugehoerige
+    Nachricht (z. B. die @-Erwaehnung) meldet ohnehin."""
+    for rec in recs:
+        if not rec.get("art"):
+            _melden(rec, raus)
+    if recs:
+        _spiegeln()
 
 
 def _banner(msgs: list | None = None) -> str:
@@ -186,7 +146,7 @@ def _banner(msgs: list | None = None) -> str:
     einzige Weg, ungelesene Nachrichten mitzubekommen, ohne dass jemand daran denkt."""
     if not ICH:
         return ""
-    u = _ungelesen(ICH, msgs)
+    u = lib.ungelesen(ICH, msgs)
     if not u:
         return ""
     kopf = f"🔔 {len(u)} ungelesene Nachricht(en) fuer {ICH}: "
@@ -253,8 +213,10 @@ def _sek(zeit: str) -> float:
 
 def _im_fenster(msgs: list, thread: str | None, jetzt: float) -> int:
     grenze = jetzt - FENSTER_SEK
+    # Meta-Eintraege (beitritt/verlassen) sind keine Diskussion und zaehlen nicht.
     return sum(1 for m in msgs
-               if m.get("von") != MENSCH
+               if not m.get("art")
+               and m.get("von") != MENSCH
                and (thread is None or m.get("thread") == thread)
                and _sek(m.get("zeit", "")) >= grenze)
 
@@ -281,12 +243,12 @@ def _notaus(msgs: list, von: str, thread: str | None) -> str | None:
     return None
 
 
-def _geschlossen(msgs: list, thread: str) -> bool:
-    return any(m["thread"] == thread and m["haltung"] == "entscheidung" for m in msgs)
-
-
-def _fmt(m: dict) -> str:
-    return f"[{m['zeit'][5:16]}] {m['von']} · {m['haltung']}\n{m['text']}"
+def _warnung_identitaet() -> str:
+    """Ist KANAL_ICH nicht gesetzt, kann der Absender nicht geprueft werden — dann
+    warnen statt still durchzuwinken (der Schutz soll nicht lautlos wegfallen)."""
+    return ("" if ICH else
+            "\n⚠️ KANAL_ICH ist nicht gesetzt — Absender ungeprueft. "
+            "\"env\": {\"KANAL_ICH\": \"...\"} in der MCP-Konfiguration eintragen.")
 
 
 def mit_banner(fn):
@@ -314,39 +276,45 @@ def kanal_ungelesen() -> str:
     ZUERST AUFRUFEN, wenn du in den Kanal kommst. Das ist der Ersatz fuer eine
     Push-Benachrichtigung: MCP kann ein Modell nicht wecken, das gerade nicht laeuft —
     aber es kann dir beim naechsten Zug sagen, was du verpasst hast. Wer bin ich, kommt
-    aus KANAL_ICH in der MCP-Konfiguration.
+    aus KANAL_ICH in der MCP-Konfiguration. Geliefert wird nur, was zu Threads gehoert,
+    an denen du teilnimmst.
     """
     if not ICH:
         return ("KANAL_ICH ist nicht gesetzt — ich weiss nicht, wer du bist. Trage in der "
                 "MCP-Konfiguration \"env\": {\"KANAL_ICH\": \"kimi\"} bzw. \"opus\" ein.")
-    msgs = _lade()
-    u = _ungelesen(ICH, msgs)
+    msgs = lib.lade()
+    u = lib.ungelesen(ICH, msgs)
     if not u:
         return f"Nichts Neues fuer {ICH}."
-    _marke_setzen(ICH, u[-1]["zeit"])
-    kopf = f"{len(u)} neue Nachricht(en) fuer {ICH} (Marke gesetzt auf {u[-1]['zeit']}):"
-    return kopf + "\n\n" + "\n\n".join(f"[{m['thread']}] " + _fmt(m) for m in u)
+    lib.marke_setzen(ICH, {th: max(m["nr"] for m in u if m["thread"] == th)
+                           for th in {m["thread"] for m in u}}, msgs)
+    kopf = f"{len(u)} neue Nachricht(en) fuer {ICH} (Marken gesetzt):"
+    return kopf + "\n\n" + "\n\n".join(f"[{m['thread']}] " + lib.fmt(m) for m in u)
 
 
 @mcp.tool()
 @mit_banner
 def kanal_offen() -> str:
-    """Offene Threads mit ihrer Frage und der letzten Nachricht. Zuerst aufrufen, um zu
-    sehen, worüber gerade gesprochen wird und wo eine Antwort fehlt."""
-    msgs = _lade()
-    if not msgs:
+    """Offene Threads mit ihrer Frage, ihren Teilnehmern und der letzten Nachricht.
+    Zuerst aufrufen, um zu sehen, worüber gerade gesprochen wird und wo eine Antwort
+    fehlt."""
+    msgs = lib.lade()
+    fach = [m for m in msgs if not m.get("art")]   # Meta-Eintraege sind keine Beitraege
+    if not fach:
         return "Kanal ist leer. Mit kanal_neu einen Thread eröffnen."
+    basis, raus = lib.beteiligte(msgs)
     t: dict = {}
-    for m in msgs:
+    for m in fach:
         t.setdefault(m["thread"], []).append(m)
-    zu = {k for k in t if _geschlossen(msgs, k)}
+    zu = {k for k in t if lib.geschlossen(fach, k)}
     auf = sorted((k for k in t if k not in zu), key=lambda x: t[x][-1]["zeit"])
     if not auf:
         return f"Keine offenen Threads. Geschlossen: {', '.join(sorted(zu))}"
     out = []
     for k in auf:
         erste, letzte = t[k][0], t[k][-1]
-        out.append(f"── {k}  ({len(t[k])} Nachrichten, seit {erste['zeit'][5:16]})\n"
+        dabei = ", ".join(sorted(lib.teilnehmer_von(basis, raus, k))) or "—"
+        out.append(f"── {k}  [{dabei}]  ({len(t[k])} Nachrichten, seit {erste['zeit'][5:16]})\n"
                    f"   FRAGE:  {erste['text'].splitlines()[0]}\n"
                    f"   letzte: {letzte['von']} · {letzte['haltung']} · "
                    f"{letzte['text'].splitlines()[0][:100]}")
@@ -360,45 +328,63 @@ def kanal_offen() -> str:
 def kanal_lesen(thread: str = "", letzte: int = 0) -> str:
     """Verlauf lesen. thread leer = alle Threads. letzte=N begrenzt auf die N neuesten
     Nachrichten. Vor dem Antworten aufrufen, damit nicht am anderen vorbeigeredet wird."""
-    msgs = _lade()
+    msgs = lib.lade()
     sel = [m for m in msgs if not thread or m["thread"] == thread]
     if not sel:
         return f"Nichts gefunden{f' fuer Thread {thread}' if thread else ''}."
     if letzte > 0:
         sel = sel[-letzte:]
-    # Gelesen ist gelesen: die Marke vorruecken, sonst meldet das Banner dieselben
-    # Nachrichten bei jedem weiteren Werkzeugaufruf erneut.
+    # Gelesen ist gelesen: die Marken der BETREFFENDEN Threads vorruecken, sonst meldet
+    # das Banner dieselben Nachrichten bei jedem weiteren Werkzeugaufruf erneut. Andere
+    # Threads bleiben unangetastet — darum sind die Marken pro Thread.
     if ICH and sel:
-        _marke_setzen(ICH, max(m["zeit"] for m in sel))
+        lib.marke_setzen(ICH, {th: max(m["nr"] for m in sel if m["thread"] == th)
+                               for th in {m["thread"] for m in sel}}, msgs)
     kopf = f"{len(sel)} Nachricht(en)" + (f" in '{thread}'" if thread else "")
-    return kopf + "\n\n" + "\n\n".join(_fmt(m) for m in sel)
+    return kopf + "\n\n" + "\n\n".join(lib.fmt(m) for m in sel)
 
 
 @mcp.tool()
 @mit_banner
-def kanal_neu(von: str, thread: str, frage: str) -> str:
-    """Neuen Thread eröffnen. `von` ist einer der Teilnehmer (KANAL_WER). `thread` ist eine kurze
-    Kennung ohne Leerzeichen. `frage` MUSS die Frage benennen, die der Thread klären
-    soll — Regel 1. Ein Thread ohne Frage wird abgelehnt."""
-    msgs = _lade()
-    if von not in WER:
-        return f"FEHLER: '{von}' unbekannt. Erlaubt: {', '.join(WER)}"
-    if not frage.strip():
-        return "FEHLER Regel 1: kein Thread ohne Frage. Was soll geklaert werden?"
-    if any(m["thread"] == thread for m in msgs):
-        return f"FEHLER: Thread '{thread}' existiert schon. Nutze kanal_sagen."
-    notaus = _notaus(msgs, von, None)   # neuer Thread -> nur die Gesamtschranke
-    if notaus:
-        return notaus
-    _anhaengen({"zeit": _jetzt(), "von": von, "thread": thread,
-                "haltung": "frage", "text": frage})
-    return f"Thread '{thread}' eröffnet."
+def kanal_neu(von: str, thread: str, frage: str, teilnehmer: str = "") -> str:
+    """Neuen Thread eröffnen. `von` ist einer der Teilnehmer (KANAL_WER) und muss zu
+    KANAL_ICH dieses Clients passen. `thread` ist eine kurze Kennung in fester Form
+    (Kleinbuchstaben, Ziffern, `-`/`_` — der Server lehnt andere Namen ab, weil der
+    Name zugleich die Adresse des Threads ist).
+    `frage` MUSS die Frage benennen, die der Thread klären soll — Regel 1. Ein Thread
+    ohne Frage wird abgelehnt.
+
+    `teilnehmer` ist eine kommagetrennte Liste aus KANAL_WER — leer bedeutet öffentlich
+    (alle). Wer nicht dabei ist, wird bei diesem Thema nicht geweckt und kann nicht
+    schreiben, bis er beitritt (kanal_beitreten) oder per @name geholt wird. Der
+    Ersteller ist automatisch dabei."""
+    tn = [t.strip().lower() for t in teilnehmer.split(",") if t.strip()]
+    with lib.gesperrt():
+        # Pruefung und Schreiben unter EINER Sperre — sonst ist jede Regel ein
+        # TOCTOU-Fenster (der Thread koennte zwischen Pruefung und Append entstehen).
+        msgs = lib.lade()
+        fehler = lib.validiere_neu(msgs, von, thread, frage, tn, ich=ICH)
+        if fehler:
+            return fehler
+        notaus = _notaus(msgs, von, None)   # neuer Thread -> nur die Gesamtschranke
+        if notaus:
+            return notaus
+        rec = {"zeit": lib.jetzt(), "von": von, "thread": thread,
+               "haltung": "frage", "text": frage}
+        if tn:
+            rec["teilnehmer"] = sorted({von, *tn})
+        lib.anhaengen(rec)
+        raus = lib.beteiligte(msgs)[1]
+    _zustellen([rec], raus)
+    kreis = "öffentlich (alle)" if not tn else "Teilnehmer: " + ", ".join(rec["teilnehmer"])
+    return f"Thread '{thread}' eröffnet — {kreis}." + _warnung_identitaet()
 
 
 @mcp.tool()
 @mit_banner
 def kanal_sagen(von: str, thread: str, haltung: str, text: str) -> str:
-    """In einem Thread antworten.
+    """In einem Thread antworten. Nur Teilnehmer des Threads duerfen schreiben —
+    mit kanal_beitreten dazukommen, oder dich per @name im Text holen lassen.
 
     haltung MUSS eine von diesen sein:
       zustimmung   — mit Grund. Bloßes Ja wird abgelehnt (Regel 2).
@@ -408,46 +394,101 @@ def kanal_sagen(von: str, thread: str, haltung: str, text: str) -> str:
                      hat, postet als `frage` oder schreibt "ungeprüft" dazu.
       entscheidung — nur die Entscheider-Rolle (Regel 4). Schließt den Thread.
     """
-    msgs = _lade()
-    if von not in WER:
-        return f"FEHLER: '{von}' unbekannt. Erlaubt: {', '.join(WER)}"
-    if haltung not in HALTUNG:
-        return f"FEHLER: haltung muss eine von {list(HALTUNG)} sein."
-    if not any(m["thread"] == thread for m in msgs):
-        return f"FEHLER: Thread '{thread}' gibt es nicht. Nutze kanal_neu."
-    if _geschlossen(msgs, thread):
-        return f"FEHLER Regel 5: '{thread}' ist geschlossen."
-    if haltung == "entscheidung" and von != MENSCH:
-        return f"FEHLER Regel 4: nur {MENSCH} entscheidet. Nutze widerspruch oder befund."
-    if haltung == "zustimmung" and len(text.split()) < 8:
-        return ("FEHLER Regel 2: Zustimmung braucht einen Grund, nicht nur ein Ja. "
-                "Warum stimmst du zu, und was folgt daraus?")
-    notaus = _notaus(msgs, von, thread)
-    if notaus:
-        return notaus
-    if haltung == "befund" and not any(c.isdigit() for c in text) \
-            and "http" not in text and "ungeprüft" not in text.lower():
-        return ("FEHLER Regel 3: ein Befund braucht eine Zahl oder Quelle. "
-                "Ohne Belegwert als 'frage' posten oder 'ungeprüft' kennzeichnen.")
-    _anhaengen({"zeit": _jetzt(), "von": von, "thread": thread,
-                "haltung": haltung, "text": text})
-    return f"{von} → '{thread}' ({haltung}) abgelegt."
+    with lib.gesperrt():
+        msgs = lib.lade()
+        fehler = lib.validiere(msgs, von, thread, haltung, text, ich=ICH)
+        if fehler:
+            return fehler
+        notaus = _notaus(msgs, von, thread)
+        if notaus:
+            return notaus
+        rec = lib.anhaengen({"zeit": lib.jetzt(), "von": von, "thread": thread,
+                             "haltung": haltung, "text": text})
+        recs = [rec]
+        # @erwaehnung: Genannte werden in den Thread geholt — der sanfte Weg, jemanden
+        # gezielt dazuzunehmen, statt alle Threads fuer alle zu oeffnen. Der Lookbehind
+        # verhindert Fehlzuendungen bei E-Mail-Adressen (max@kimi) und @@.
+        basis, raus = lib.beteiligte(msgs + recs)
+        geholt = []
+        for name in {n.lower() for n in re.findall(r"(?<![\w.@-])@([A-Za-z0-9_-]+)", text)}:
+            if name in WER and name != von and name != MENSCH \
+                    and not lib.dabei(basis, raus, thread, name):
+                recs.append(lib.anhaengen({"zeit": lib.jetzt(), "von": name,
+                                           "thread": thread, "art": "beitritt",
+                                           "durch": von, "text": ""}))
+                geholt.append(name)
+    _zustellen(recs, raus)
+    zugabe = f" ({', '.join(geholt)} per @ geholt)" if geholt else ""
+    return f"{von} → '{thread}' ({haltung}) abgelegt.{zugabe}" + _warnung_identitaet()
+
+
+@mcp.tool()
+@mit_banner
+def kanal_beitreten(thread: str) -> str:
+    """Einem Thread beitreten: danach bekommst du seine Nachrichten als ungelesen
+    gemeldet und darfst schreiben. Wer du bist, kommt aus KANAL_ICH."""
+    if not ICH:
+        return ("KANAL_ICH ist nicht gesetzt — ich weiss nicht, wer du bist. Trage in der "
+                "MCP-Konfiguration \"env\": {\"KANAL_ICH\": \"kimi\"} bzw. \"opus\" ein.")
+    with lib.gesperrt():
+        msgs = lib.lade()
+        if not any(m["thread"] == thread for m in msgs):
+            return f"FEHLER: Thread '{thread}' gibt es nicht."
+        basis, raus = lib.beteiligte(msgs)
+        if lib.dabei(basis, raus, thread, ICH):
+            return f"{ICH} ist schon in '{thread}'."
+        rec = lib.anhaengen({"zeit": lib.jetzt(), "von": ICH, "thread": thread,
+                             "art": "beitritt", "text": ""})
+    _zustellen([rec], raus)
+    return f"{ICH} ist '{thread}' beigetreten."
+
+
+@mcp.tool()
+@mit_banner
+def kanal_verlassen(thread: str) -> str:
+    """Einen Thread verlassen: keine ungelesenen Meldungen mehr aus diesem Thema.
+    Lesen kannst du ihn weiterhin (kanal_lesen). Wer du bist, kommt aus KANAL_ICH.
+    Auch die Entscheider-Rolle kann verlassen — die Zustellung stoppt, die Sicht nicht."""
+    if not ICH:
+        return ("KANAL_ICH ist nicht gesetzt — ich weiss nicht, wer du bist. Trage in der "
+                "MCP-Konfiguration \"env\": {\"KANAL_ICH\": \"kimi\"} bzw. \"opus\" ein.")
+    with lib.gesperrt():
+        msgs = lib.lade()
+        if not any(m["thread"] == thread for m in msgs):
+            return f"FEHLER: Thread '{thread}' gibt es nicht."
+        basis, raus = lib.beteiligte(msgs)
+        if ICH in raus.get(thread, ()):
+            return f"{ICH} ist aus '{thread}' schon draussen."
+        if ICH != MENSCH and not lib.dabei(basis, raus, thread, ICH):
+            return f"{ICH} ist gar nicht in '{thread}'."
+        rec = lib.anhaengen({"zeit": lib.jetzt(), "von": ICH, "thread": thread,
+                             "art": "verlassen", "text": ""})
+    _zustellen([rec], raus)
+    return f"{ICH} hat '{thread}' verlassen — Zustellung stoppt, Lesen bleibt moeglich."
 
 
 @mcp.tool()
 @mit_banner
 def kanal_zu(thread: str, entscheidung: str) -> str:
-    """Thread schliessen. Nur fuer die Entscheider-Rolle (KANAL_MENSCH). Die Entscheidung wird als letzte Nachricht
-    festgehalten, damit spaeter nachvollziehbar ist, WAS entschieden wurde und warum."""
-    msgs = _lade()
-    if not any(m["thread"] == thread for m in msgs):
-        return f"FEHLER: Thread '{thread}' gibt es nicht."
-    if _geschlossen(msgs, thread):
-        return f"'{thread}' war schon geschlossen."
-    if not entscheidung.strip():
-        return "FEHLER: eine Entscheidung ohne Inhalt ist keine."
-    _anhaengen({"zeit": _jetzt(), "von": MENSCH, "thread": thread,
-                "haltung": "entscheidung", "text": entscheidung})
+    """Thread schliessen. Nur fuer die Entscheider-Rolle (KANAL_MENSCH) — geprueft wird
+    KANAL_ICH dieses Clients, nicht ein frei waehlbarer Name. Die Entscheidung wird als
+    letzte Nachricht festgehalten, damit spaeter nachvollziehbar ist, WAS entschieden
+    wurde und warum."""
+    if ICH != MENSCH:
+        return (f"FEHLER Regel 4: nur {MENSCH} schliesst Threads "
+                f"(dieser Client: {ICH or 'KANAL_ICH nicht gesetzt'}).")
+    with lib.gesperrt():
+        msgs = lib.lade()
+        if not any(m["thread"] == thread for m in msgs):
+            return f"FEHLER: Thread '{thread}' gibt es nicht."
+        if lib.geschlossen(msgs, thread):
+            return f"'{thread}' war schon geschlossen."
+        if not entscheidung.strip():
+            return "FEHLER: eine Entscheidung ohne Inhalt ist keine."
+        rec = lib.anhaengen({"zeit": lib.jetzt(), "von": MENSCH, "thread": thread,
+                             "haltung": "entscheidung", "text": entscheidung})
+        raus = lib.beteiligte(msgs)[1]
+    _zustellen([rec], raus)
     return f"'{thread}' geschlossen."
 
 

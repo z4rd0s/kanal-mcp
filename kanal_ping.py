@@ -13,6 +13,11 @@ Zusteller:
   * fuer Kimi  — nicht ueber dieses Skript (Kimi Code kennt keine Hooks), sondern ueber
                  das Ungelesen-Banner, das der MCP-Server jeder Werkzeugantwort voranstellt.
 
+## Themenbezogen
+Gemeldet wird nur, was zu Threads gehoert, an denen der Empfaenger teilnimmt
+(Teilnehmerliste bei der Thread-Eroeffnung, kanal_beitreten/verlassen, @-Erwaehnung).
+Die Logik dazu kommt aus kanal_lib — dieselbe, die der Server verwendet.
+
 ## Warum es NICHT als gelesen markiert
 Der Hook laeuft, bevor der Empfaenger die Nachricht verarbeitet hat. Wuerde er die Marke
 setzen, waere die Nachricht formal zugestellt und faktisch ungesehen, sobald der Zug
@@ -30,37 +35,23 @@ import argparse
 import json
 import subprocess
 import sys
-from pathlib import Path
 
-ROOT = Path(os.environ.get("KANAL_DIR") or Path(__file__).resolve().parent)
-LOG = ROOT / "kanal.jsonl"
-GELESEN = ROOT / "gelesen.json"
+import kanal_lib as lib
+
 MAX_ZEIGEN = 5          # mehr wuerde den Kontext fluten; der Rest wird gezaehlt
 MAX_ZEICHEN = 700       # pro Nachricht
 
 
-def lade(pfad: Path) -> list:
-    if not pfad.exists():
-        return []
-    out = []
-    for zeile in pfad.read_text(encoding="utf-8").splitlines():
-        zeile = zeile.strip()
-        if not zeile:
-            continue
-        try:
-            out.append(json.loads(zeile))
-        except Exception:  # noqa: BLE001 — eine kaputte Zeile darf den Hook nicht toeten
-            continue
-    return out
-
-
-def marke(wer: str) -> str:
-    if not GELESEN.exists():
-        return ""
-    try:
-        return json.loads(GELESEN.read_text(encoding="utf-8")).get(wer, "")
-    except Exception:  # noqa: BLE001
-        return ""
+def zeile(x: dict) -> str:
+    """Eine Nachricht oder ein Meta-Eintrag als kurzer Anzeigetext."""
+    if x.get("art"):
+        return lib.fmt(x)
+    t = x.get("text", "")
+    if len(t) > MAX_ZEICHEN:
+        t = t[:MAX_ZEICHEN] + f" … (+{len(x['text']) - MAX_ZEICHEN} Zeichen, "
+        t += "vollstaendig ueber kanal_ungelesen)"
+    return (f"[{x.get('zeit','')[5:16]}] {x.get('von')} · {x.get('haltung')} "
+            f"· Thread {x.get('thread')}\n{t}")
 
 
 def main() -> int:
@@ -74,9 +65,8 @@ def main() -> int:
                          "additionalContext ist der dafuer vorgesehene Weg.")
     args = ap.parse_args()
 
-    msgs = lade(LOG)
-    m = marke(args.fuer)
-    neu = [x for x in msgs if x.get("zeit", "") > m and x.get("von") != args.fuer]
+    msgs = lib.lade()
+    neu = lib.ungelesen(args.fuer, msgs)
     if not neu:
         return 0
 
@@ -100,12 +90,7 @@ def main() -> int:
                  "Diese Meldung markiert nichts als gelesen. Zum Abholen und Quittieren: "
                  "kanal_ungelesen(). Antworten mit kanal_sagen(von=\"" + args.fuer + "\", ...)."]
         for x in neu[-MAX_ZEIGEN:]:
-            t = x.get("text", "")
-            if len(t) > MAX_ZEICHEN:
-                t = t[:MAX_ZEICHEN] + f" … (+{len(x['text']) - MAX_ZEICHEN} Zeichen, "
-                t += "vollstaendig ueber kanal_ungelesen)"
-            teile.append(f"\n[{x.get('zeit','')[5:16]}] {x.get('von')} · {x.get('haltung')} "
-                         f"· Thread {x.get('thread')}\n{t}")
+            teile.append("\n" + zeile(x))
         if len(neu) > MAX_ZEIGEN:
             teile.append(f"\n… und {len(neu) - MAX_ZEIGEN} weitere.")
         print(json.dumps({
@@ -124,11 +109,7 @@ def main() -> int:
         print(f"KANAL: {len(neu)} ungelesene Nachricht(en) fuer {args.fuer} "
               f"in {', '.join(threads)}.")
         for x in neu[-MAX_ZEIGEN:]:
-            text = x.get("text", "")
-            if len(text) > MAX_ZEICHEN:
-                text = text[:MAX_ZEICHEN] + f" … (+{len(x['text']) - MAX_ZEICHEN} Zeichen)"
-            print(f"\n[{x.get('zeit', '')[5:16]}] {x.get('von')} · {x.get('haltung')} "
-                  f"· Thread {x.get('thread')}\n{text}")
+            print("\n" + zeile(x))
         if len(neu) > MAX_ZEIGEN:
             print(f"\n… und {len(neu) - MAX_ZEIGEN} weitere. Vollstaendig mit kanal_ungelesen().")
         print("\n(Diese Meldung markiert NICHTS als gelesen — dafuer kanal_ungelesen() "

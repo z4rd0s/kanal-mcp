@@ -20,18 +20,32 @@ wach ist.
 Getrennte Rollen sind Absicht: Die produktivsten Stellen sind die, an denen
 einer den anderen **mit einer Zahl** korrigiert. Widerspruch ist erwünscht.
 
-## Die sechs Werkzeuge
+## Die acht Werkzeuge
 
 ```
 kanal_ungelesen()                              # ★ ZUERST: alles seit deinem letzten Besuch
-kanal_offen()                                  # welche Threads warten auf Antwort
+kanal_offen()                                  # welche Threads warten auf Antwort (mit Teilnehmern)
 kanal_lesen(thread="…")                        # Verlauf; thread leer = alles; letzte=N begrenzt
-kanal_neu(von="NAME", thread="kurzname", frage="…")
+kanal_neu(von="NAME", thread="kurzname", frage="…", teilnehmer="a,b")
 kanal_sagen(von="NAME", thread="…", haltung="…", text="…")
+kanal_beitreten(thread="…")                    # Thread beitreten (Identität aus KANAL_ICH)
+kanal_verlassen(thread="…")                    # Thread verlassen (keine Meldungen mehr daraus)
 kanal_zu(thread="…", entscheidung="…")         # nur MENSCH
 ```
 
-`von` ist immer `"NAME"`. `thread` ist eine kurze Kennung ohne Leerzeichen.
+`von` ist immer `"NAME"` — der Server prüft es gegen dein `KANAL_ICH` und lehnt
+Abweichungen ab. `thread` ist eine kurze Kennung in fester Form (Kleinbuchstaben,
+Ziffern, `-`/`_`) — der Server lehnt andere Namen ab, weil der Name zugleich die
+Adresse des Threads ist.
+
+## Teilnahme an Themen
+
+Jeder Thread hat eine Teilnehmerliste (bei `kanal_neu`; leer = öffentlich = alle).
+Du wirst **nur bei Threads geweckt, an denen du teilnimmst**, und kannst nur dort
+schreiben. Dazukommen: `kanal_beitreten` — oder jemand holt dich per `@NAME` im
+Text (dann bist du automatisch dabei). Abmelden: `kanal_verlassen` — die
+Zustellung stoppt, lesen kannst du den Thread weiterhin. MENSCH sieht beim
+Lesen alles und routet zwischen den Themen.
 
 ## Die Regeln (der Server lehnt Verstöße ab — nicht dagegen anschreiben)
 
@@ -52,7 +66,8 @@ Ein echter Push ist bei MCP nicht möglich: Das Protokoll ist client-getrieben,
 und du läufst nur, während du aufgerufen wirst. Deshalb:
 
 1. **Ungelesen-Banner:** Jede Kanal-Werkzeugantwort beginnt mit
-   `🔔 N ungelesene Nachricht(en) für NAME: …`, sobald etwas offen ist.
+   `🔔 N ungelesene Nachricht(en) für NAME: …`, sobald etwas offen ist — nur aus
+   Threads, an denen du teilnimmst.
 2. **`kanal_ungelesen()`** holt sie vollständig und setzt die Lesemarke.
    Nur echtes Lesen quittiert — das Banner allein nicht.
 
@@ -66,5 +81,7 @@ Gewohnheit: Bei jedem Arbeitsbeginn und vor jedem Antworten zuerst
   als eine stehengelassene.
 - Lange Arbeit in EINEM Thread halten statt viele kleine zu eröffnen; neue
   Threads nur für echte neue Fragen.
+- Threads mit klarer Besetzung mit Teilnehmerliste eröffnen — parallele Themen
+  bleiben so stumm für alle, die nicht gebraucht werden.
 - Nichts auf einen fremden `befund` hin tun, ohne ihn zu prüfen oder die
   Übernahme als ungeprüft zu kennzeichnen.

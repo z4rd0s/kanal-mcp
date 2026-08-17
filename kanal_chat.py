@@ -1,51 +1,26 @@
 #!/usr/bin/env python3
 """kanal_chat.py — kleiner Web-Chatclient fuer den Kanal (chris/opus/kimi).
 
-Zeigt die Konversation aus ~/nunaki-local/kanal/kanal.jsonl live an:
+Zeigt die Konversation aus kanal.jsonl live an:
 linke Spalte = Threads (klickbar, mit letzter Aktivitaet), Mitte = Nachrichten,
-unten = Eingabe + Haltung + Senden (schreibt mit flock in kanal.jsonl).
+unten = Eingabe + Haltung + Senden. Regeln, Sperren und Speicher kommen aus
+kanal_lib — derselben Stelle, die auch Server und CLI nutzen.
 Kein Framework, nur Python-Stdlib. Start: python3 kanal_chat.py [port]
 """
-import json, os, fcntl, html, time, sys
+import json, re, sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
-KANAL_DIR = os.environ.get("KANAL_DIR") or os.path.dirname(os.path.abspath(__file__))
-MENSCH = (os.environ.get("KANAL_MENSCH") or "chris").strip().lower()
-LOG = os.path.join(KANAL_DIR, "kanal.jsonl")
+import kanal_lib as lib
+from kanal_lib import MENSCH
+
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8137
-
-def read_msgs():
-    if not os.path.exists(LOG):
-        return []
-    msgs = []
-    with open(LOG, encoding="utf-8") as f:
-        fcntl.flock(f, fcntl.LOCK_SH)
-        try:
-            for line in f:
-                line = line.strip()
-                if line:
-                    try: msgs.append(json.loads(line))
-                    except: pass
-        finally:
-            fcntl.flock(f, fcntl.LOCK_UN)
-    return msgs
-
-def append_msg(von, thread, haltung, text):
-    rec = {"zeit": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-           "von": von, "thread": thread, "haltung": haltung, "text": text}
-    os.makedirs(KANAL_DIR, exist_ok=True)
-    with open(LOG, "a", encoding="utf-8") as f:
-        fcntl.flock(f, fcntl.LOCK_EX)
-        try:
-            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
-        finally:
-            fcntl.flock(f, fcntl.LOCK_UN)
-    return rec
 
 def threads_of(msgs):
     t = {}
     for m in msgs:
+        if m.get("art"):
+            continue          # Meta-Eintraege (beitritt/verlassen) sind keine Beitraege
         th = m.get("thread", "?")
         e = t.setdefault(th, {"name": th, "count": 0, "last": "", "closed": False})
         e["count"] += 1
@@ -70,6 +45,7 @@ PAGE = """<!doctype html><html lang=de><head><meta charset=utf-8>
 .m .hd{font-size:11px;margin-bottom:3px;color:#8a94a3}
 .m .bd{background:#1a1f29;border-radius:10px;padding:9px 12px;white-space:pre-wrap;word-wrap:break-word}
 .m.chris .bd{background:#1e3a2f}.m.opus .bd{background:#232c44}.m.kimi .bd{background:#3a2430}
+.meta-line{font-size:11px;color:#7a8494;margin:6px 0 10px 4px}
 .badge{display:inline-block;font-size:10px;padding:1px 6px;border-radius:8px;margin-right:6px;background:#2a3140;color:#aeb8c8}
 .badge.opus{background:#2c3a6b}.badge.kimi{background:#5b2c3a}.badge.chris{background:#2c5b3f}
 #composer{border-top:1px solid #262a33;padding:12px 16px;background:#12151b}
@@ -106,8 +82,9 @@ async function loadFull(){
  if(!cur)return;
  const box=el('msgs'); if(!box)return;
  const ms=await j('/api/messages?thread='+encodeURIComponent(cur));
- box.innerHTML=ms.map(m=>
-  `<div class="m ${esc(m.von)}"><div class="hd"><span class="badge ${esc(m.von)}">${esc(m.von)}</span> <span class="badge">${esc(m.haltung)}</span> ${String(m.zeit).slice(5,19).replace('T',' ')}</div><div class="bd">${esc(m.text)}</div></div>`).join('');
+ box.innerHTML=ms.map(m=>m.art
+  ?`<div class="meta-line">${m.art==='beitritt'?'→':'←'} ${esc(m.von)} ${m.art==='beitritt'?'ist beigetreten'+(m.durch?' (geholt von '+esc(m.durch)+')':''):'hat den Thread verlassen'}</div>`
+  :`<div class="m ${esc(m.von)}"><div class="hd"><span class="badge ${esc(m.von)}">${esc(m.von)}</span> <span class="badge">${esc(m.haltung)}</span> ${String(m.zeit).slice(5,19).replace('T',' ')}</div><div class="bd">${esc(m.text)}</div></div>`).join('');
  box.scrollTop=box.scrollHeight;
 }
 function openThread(t){cur=t;loadFull().catch(()=>{});loadThreads().catch(()=>{})}
@@ -148,12 +125,12 @@ class H(BaseHTTPRequestHandler):
         if u.path == "/":
             self._send(200, PAGE, "text/html")
         elif u.path == "/api/threads":
-            self._send(200, json.dumps(threads_of(read_msgs()), ensure_ascii=False))
+            self._send(200, json.dumps(threads_of(lib.lade()), ensure_ascii=False))
         elif u.path == "/api/messages":
             q = parse_qs(u.query)
             th = q.get("thread", [""])[0]
             since = q.get("since", [""])[0]
-            ms = [m for m in read_msgs() if m.get("thread") == th and (not since or m.get("zeit", "") > since)]
+            ms = [m for m in lib.lade() if m.get("thread") == th and (not since or m.get("zeit", "") > since)]
             self._send(200, json.dumps(ms, ensure_ascii=False))
         else:
             self._send(404, "{}")
@@ -164,22 +141,30 @@ class H(BaseHTTPRequestHandler):
         body = json.loads(self.rfile.read(n) or b"{}")
         if u.path == "/api/sagen":
             th, ha, tx = body.get("thread",""), body.get("haltung","frage"), (body.get("text","") or "").strip()
-            closed = any(m.get("thread")==th and m.get("haltung")=="entscheidung" for m in read_msgs())
             if not th or not tx:
                 self._send(400, json.dumps({"error":"thread/text fehlt"})); return
-            if closed:
-                self._send(400, json.dumps({"error":"thread ist geschlossen"})); return
-            self._send(200, json.dumps(append_msg(MENSCH, th, ha, tx), ensure_ascii=False))
+            with lib.gesperrt():
+                fehler = lib.validiere(lib.lade(), MENSCH, th, ha, tx)
+                if fehler:
+                    self._send(400, json.dumps({"error": fehler})); return
+                rec = lib.anhaengen({"zeit": lib.jetzt(), "von": MENSCH, "thread": th,
+                                     "haltung": ha, "text": tx})
+            self._send(200, json.dumps(rec, ensure_ascii=False))
         elif u.path == "/api/neu":
             f = (body.get("frage","") or "").strip()
             if not f:
                 self._send(400, json.dumps({"error":"frage fehlt (Regel 1)"})); return
-            th = f.lower().replace(" ", "-")[:24].strip("-") or "thread"
-            append_msg(MENSCH, th, "frage", f)
+            th = re.sub(r"[^a-z0-9_-]+", "-", f.lower())[:24].strip("-") or "thread"
+            with lib.gesperrt():
+                fehler = lib.validiere_neu(lib.lade(), MENSCH, th, f, [])
+                if fehler:
+                    self._send(400, json.dumps({"error": fehler})); return
+                lib.anhaengen({"zeit": lib.jetzt(), "von": MENSCH, "thread": th,
+                               "haltung": "frage", "text": f})
             self._send(200, json.dumps({"thread": th}))
         else:
             self._send(404, "{}")
 
 if __name__ == "__main__":
-    print(f"kanal-chat auf http://localhost:{PORT}  (Daten: {LOG})")
+    print(f"kanal-chat auf http://localhost:{PORT}  (Daten: {lib.LOG})")
     ThreadingHTTPServer(("127.0.0.1", PORT), H).serve_forever()
