@@ -1,0 +1,182 @@
+#!/usr/bin/env python3
+"""kanal — lokaler Gesprächsraum für Chris, Kimi und Opus.
+
+Warum eine Datei und kein IRC/Socket: weder Kimi noch Opus laufen dauerhaft. Sie
+existieren nur, während sie angesprochen werden. Ein Stream verliert jede Nachricht,
+die eintrifft, während einer nicht verbunden ist. Also persistente Ablage mit Sperre —
+und ein Werkzeug, das die Gesprächsregeln erzwingt statt sie zu erhoffen.
+
+ROLLEN
+  chris  entscheidet. Eröffnet Themen, trifft Entscheidungen, schließt Threads.
+  opus   baut und misst. Zuständig für Code, Cluster, Zahlen.
+  kimi   prüft und widerspricht. Zuständig für Plan, Logik, Zirkelschlüsse.
+
+REGELN (vom Werkzeug geprüft, nicht nur empfohlen)
+  1. Jede Nachricht gehört zu einem THREAD mit Frage. Kein Thread ohne Frage.
+  2. Wer auf eine Nachricht antwortet, muss eine HALTUNG angeben:
+        zustimmung | widerspruch | frage | befund | entscheidung
+     Bloßes Zustimmen ohne Grund lehnt das Werkzeug ab.
+  3. Ein `befund` braucht eine Zahl oder eine Quelle. Sonst als `frage` posten.
+  4. Nur chris kann `entscheidung` setzen. Sie schließt den Thread.
+  5. Kein Agent handelt auf einen fremden `befund` hin, ohne ihn zu prüfen oder
+     ausdrücklich als ungeprüft zu kennzeichnen.
+
+BEFEHLE
+  kanal offen                     offene Threads mit letzter Nachricht
+  kanal lesen [thread] [-n N]     Verlauf, standardmäßig alles Neue
+  kanal neu <von> <thread> <frage>            Thread eröffnen
+  kanal sagen <von> <thread> <haltung> <text> antworten
+  kanal zu <thread> <entscheidung>            Thread schließen (nur chris)
+"""
+from __future__ import annotations
+import fcntl, json, os, sys, time
+from pathlib import Path
+
+ROOT = Path(os.environ.get("KANAL_DIR") or Path(__file__).resolve().parent)
+LOG = ROOT / "kanal.jsonl"
+SEEN = ROOT / "gelesen.json"
+WER = {w.strip().lower() for w in (os.environ.get("KANAL_WER") or "chris,opus,kimi").split(",") if w.strip()}
+MENSCH = (os.environ.get("KANAL_MENSCH") or ("chris" if "chris" in WER else sorted(WER)[0])).strip().lower()
+HALTUNG = {"zustimmung", "widerspruch", "frage", "befund", "entscheidung"}
+
+
+def jetzt() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def lade() -> list:
+    if not LOG.exists():
+        return []
+    with LOG.open(encoding="utf-8") as f:
+        fcntl.flock(f, fcntl.LOCK_SH)
+        try:
+            return [json.loads(l) for l in f if l.strip()]
+        finally:
+            fcntl.flock(f, fcntl.LOCK_UN)
+
+
+def anhaengen(rec: dict) -> None:
+    LOG.parent.mkdir(parents=True, exist_ok=True)
+    with LOG.open("a", encoding="utf-8") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)          # zwei Agenten gleichzeitig ist der Normalfall
+        try:
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+        finally:
+            fcntl.flock(f, fcntl.LOCK_UN)
+
+
+def threads(msgs: list) -> dict:
+    t: dict = {}
+    for m in msgs:
+        t.setdefault(m["thread"], []).append(m)
+    return t
+
+
+def zeige(m: dict, breit: int = 96) -> None:
+    kopf = f"  [{m['zeit'][5:16]}] {m['von']:5} · {m['haltung']:12} · {m['thread']}"
+    print(kopf)
+    for zeile in m["text"].splitlines() or [""]:
+        while len(zeile) > breit:
+            schnitt = zeile.rfind(" ", 0, breit)
+            schnitt = schnitt if schnitt > 40 else breit
+            print(f"        {zeile[:schnitt]}")
+            zeile = zeile[schnitt:].lstrip()
+        print(f"        {zeile}")
+    print()
+
+
+def main() -> None:
+    a = sys.argv[1:]
+    if not a or a[0] in ("-h", "--help", "hilfe"):
+        print(__doc__)
+        return
+    cmd, msgs = a[0], lade()
+
+    if cmd == "offen":
+        tt = threads(msgs)
+        zu = {m["thread"] for m in msgs if m["haltung"] == "entscheidung"}
+        auf = [k for k in tt if k not in zu]
+        if not auf:
+            print("  keine offenen Threads")
+        for k in sorted(auf, key=lambda x: tt[x][-1]["zeit"]):
+            erste, letzte = tt[k][0], tt[k][-1]
+            print(f"\n  ── {k}  ({len(tt[k])} Nachrichten, offen seit {erste['zeit'][5:16]})")
+            print(f"     FRAGE: {erste['text'].splitlines()[0][:88]}")
+            print(f"     letzte: {letzte['von']} · {letzte['haltung']} · "
+                  f"{letzte['text'].splitlines()[0][:70]}")
+        if zu:
+            print(f"\n  geschlossen: {', '.join(sorted(zu))}")
+        return
+
+    if cmd == "lesen":
+        rest = [x for x in a[1:] if not x.startswith("-")]
+        n = int(a[a.index("-n") + 1]) if "-n" in a else None
+        sel = [m for m in msgs if not rest or m["thread"] in rest]
+        if n:
+            sel = sel[-n:]
+        elif not rest and SEEN.exists():
+            marke = json.loads(SEEN.read_text()).get("bis", "")
+            neu = [m for m in sel if m["zeit"] > marke]
+            if neu:
+                print(f"  ── {len(neu)} neue Nachricht(en) seit {marke[5:16]} ──\n")
+                sel = neu
+            else:
+                print("  nichts Neues. Ganzer Verlauf:\n")
+        for m in sel:
+            zeige(m)
+        if msgs:
+            SEEN.write_text(json.dumps({"bis": msgs[-1]["zeit"]}), encoding="utf-8")
+        return
+
+    if cmd == "neu":
+        von, thread, frage = a[1], a[2], " ".join(a[3:])
+        if von not in WER:
+            sys.exit(f"unbekannt: {von} (erlaubt: {', '.join(sorted(WER))})")
+        if not frage.strip():
+            sys.exit("Regel 1: kein Thread ohne Frage.")
+        if any(m["thread"] == thread for m in msgs):
+            sys.exit(f"Thread '{thread}' existiert — nutze: kanal sagen")
+        anhaengen({"zeit": jetzt(), "von": von, "thread": thread,
+                   "haltung": "frage", "text": frage})
+        print(f"✓ Thread '{thread}' eröffnet")
+        return
+
+    if cmd == "sagen":
+        von, thread, haltung, text = a[1], a[2], a[3], " ".join(a[4:])
+        if von not in WER:
+            sys.exit(f"unbekannt: {von}")
+        if haltung not in HALTUNG:
+            sys.exit(f"Haltung muss eine von {sorted(HALTUNG)} sein")
+        if not any(m["thread"] == thread for m in msgs):
+            sys.exit(f"Thread '{thread}' gibt es nicht — nutze: kanal neu")
+        if any(m["thread"] == thread and m["haltung"] == "entscheidung" for m in msgs):
+            sys.exit(f"Thread '{thread}' ist geschlossen.")
+        if haltung == "entscheidung" and von != MENSCH:
+            sys.exit(f"Regel 4: nur {MENSCH} entscheidet.")
+        if haltung == "zustimmung" and len(text.split()) < 8:
+            sys.exit("Regel 2: Zustimmung braucht einen Grund, nicht nur ein Ja.")
+        if haltung == "befund" and not any(c.isdigit() for c in text) \
+                and "http" not in text and "ungeprüft" not in text.lower():
+            sys.exit("Regel 3: ein Befund braucht eine Zahl oder Quelle. "
+                     "Sonst als 'frage' posten oder 'ungeprüft' kennzeichnen.")
+        anhaengen({"zeit": jetzt(), "von": von, "thread": thread,
+                   "haltung": haltung, "text": text})
+        print(f"✓ {von} → {thread} ({haltung})")
+        return
+
+    if cmd == "zu":
+        thread, text = a[1], " ".join(a[2:])
+        if not any(m["thread"] == thread for m in msgs):
+            sys.exit(f"Thread '{thread}' gibt es nicht")
+        anhaengen({"zeit": jetzt(), "von": MENSCH, "thread": thread,
+                   "haltung": "entscheidung", "text": text})
+        print(f"✓ '{thread}' geschlossen")
+        return
+
+    sys.exit(f"unbekannt: {cmd}  —  'kanal hilfe'")
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,9 @@
+# Laufzeitdaten des Kanals — gehoeren nie ins Repo
+kanal.jsonl
+gelesen.json
+gelesen.tmp
+KANAL.md
+.melde_zuletzt
+__pycache__/
+*.pyc
+*.bak*
