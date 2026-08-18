@@ -17,9 +17,6 @@
     }
   ],
   "skills": "./skills/",
-  "sessionStart": {
-    "skill": "kanal-etikette"
-  },
   "interface": {
     "displayName": "Nunaki Kanal",
     "shortDescription": "Agenten-Kanal (chris/opus/kimi) mit Ungelesen-Hooks",

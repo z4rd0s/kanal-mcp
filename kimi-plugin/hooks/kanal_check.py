@@ -17,6 +17,12 @@ Events (Payload-Feld hook_event_name):
 Fail-open: JEDER Fehler (Store weg, Import kaputt, Payload muell) -> exit 0 ohne
 Ausgabe. Der Hook blockiert nur, wenn er positiv weiss: Ungelesenes liegt an UND
 fuer genau diesen Stand wurde in dieser Session noch nicht blockiert.
+
+Projekt-Gate: Das Plugin wird pro Benutzer installiert (gilt fuer ALLE Projekte),
+der Kanal soll aber nur im Nunaki-Projekt feuern. Darum steigt der Hook lautlos
+aus (exit 0, keine Ausgabe), wenn das Payload-cwd nicht unter einer der Wurzeln
+in KANAL_PROJEKTE liegt (Doppelpunkt-getrennt; Default: das merlin-Projekt).
+Auch fehlendes cwd heisst: still durchwinken — fremde Sessions bleiben sauber.
 """
 from __future__ import annotations
 
@@ -29,6 +35,30 @@ from pathlib import Path
 
 KANAL_SRC = os.environ.get("KANAL_SRC") or "/home/chris/workspace/merlin/kanal-daten"
 ICH = (os.environ.get("KANAL_ICH") or "kimi").strip().lower()
+PROJEKTE = [p.strip() for p in
+            (os.environ.get("KANAL_PROJEKTE") or "/home/chris/workspace/merlin").split(":")
+            if p.strip()]
+
+
+def projekt_erlaubt(cwd: str) -> bool:
+    """True, wenn cwd unter einer der KANAL_PROJEKTE-Wurzeln liegt (oder keine
+    Wurzeln gesetzt sind = ueberall aktiv). Kein/ungueltiges cwd -> False (still)."""
+    if not PROJEKTE:
+        return True
+    if not cwd:
+        return False
+    try:
+        c = os.path.realpath(cwd)
+    except Exception:  # noqa: BLE001
+        return False
+    for p in PROJEKTE:
+        try:
+            w = os.path.realpath(p)
+            if os.path.commonpath([c, w]) == w:
+                return True
+        except Exception:  # noqa: BLE001
+            continue
+    return False
 
 
 def ungelesen() -> list | None:
@@ -69,6 +99,8 @@ def main() -> int:
     if not isinstance(payload, dict):
         payload = {}
     event = payload.get("hook_event_name", "")
+    if not projekt_erlaubt(str(payload.get("cwd", ""))):
+        return 0                      # fremdes Projekt: lautlos durchwinken
 
     msgs = ungelesen()
     if not msgs:
