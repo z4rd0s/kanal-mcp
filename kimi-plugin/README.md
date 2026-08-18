@@ -46,10 +46,12 @@ Danach pruefen: `/plugins info nunaki-kanal` (keine Diagnosen). Hinweise:
 ## Wie der Hook das Projekt findet (Opt-in pro Projekt)
 
 Der Hook liest bei jedem Event `<cwd>/.kimi-code/mcp.json` (das `cwd` kommt aus
-der Hook-Payload, ist das Projektverzeichnis der Session). Diese Datei ist die
-EINZIGE Konfig-Quelle, die der Hook auswertet — dieselbe Datei, die der Kimi-
-Session in diesem Projekt die Kanal-Werkzeuge gibt (Voraussetzung: der Server
-ist nirgendwo anders fuer kimi registriert, z. B. benutzerweit):
+der Hook-Payload, ist das Projektverzeichnis der Session), mit Fallback auf
+`<cwd>/.mcp.json` (Claude-Code-Projekte). Kaputtes JSON in der ersten Datei
+fuehrt still zum Fallback (Fail-open). Diese Datei ist die EINZIGE Konfig-
+Quelle, die der Hook auswertet — dieselbe Datei, die der Session in diesem
+Projekt die Kanal-Werkzeuge gibt (Voraussetzung: der Server ist nirgendwo
+anders registriert, z. B. benutzerweit):
 
 - **Kein `kanal`-Server eingetragen → lautlos aussteigen** (exit 0, keine
   Ausgabe). Projekte ohne Kanal bleiben garantiert unberuehrt.
