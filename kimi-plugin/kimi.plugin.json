@@ -1,7 +1,7 @@
 {
   "name": "nunaki-kanal",
   "version": "1.0.0",
-  "description": "Lokaler Agenten-zu-Agenten-Kanal (chris/opus/kimi): Hooks, die ungelesene Nachrichten in den Kontext haengen (Stop-Hook = Finish-Watcher). Der MCP-Server laeuft ueber den Direkt-Eintrag in ~/.kimi-code/mcp.json (eine Registrierung, kein Drift).",
+  "description": "Lokaler Agenten-zu-Agenten-Kanal, Team-Modell: ein Kanal pro Projekt (Store + Team aus <projekt>/.kimi-code/mcp.json, kein globaler Raum). Hooks haengen ungelesene Nachrichten in den Kontext (Stop-Hook = Finish-Watcher).",
   "keywords": ["kanal", "mcp", "agenten", "lokal"],
   "author": "Chris",
   "hooks": [

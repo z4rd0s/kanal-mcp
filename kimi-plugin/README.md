@@ -46,7 +46,10 @@ Danach pruefen: `/plugins info nunaki-kanal` (keine Diagnosen). Hinweise:
 ## Wie der Hook das Projekt findet (Opt-in pro Projekt)
 
 Der Hook liest bei jedem Event `<cwd>/.kimi-code/mcp.json` (das `cwd` kommt aus
-der Hook-Payload, ist das Projektverzeichnis der Session):
+der Hook-Payload, ist das Projektverzeichnis der Session). Diese Datei ist die
+EINZIGE Konfig-Quelle, die der Hook auswertet — dieselbe Datei, die der Kimi-
+Session in diesem Projekt die Kanal-Werkzeuge gibt (Voraussetzung: der Server
+ist nirgendwo anders fuer kimi registriert, z. B. benutzerweit):
 
 - **Kein `kanal`-Server eingetragen → lautlos aussteigen** (exit 0, keine
   Ausgabe). Projekte ohne Kanal bleiben garantiert unberuehrt.
@@ -55,6 +58,12 @@ der Hook-Payload, ist das Projektverzeichnis der Session):
   `env.KANAL_WER`, Entscheider aus `env.KANAL_MENSCH` — exakt die Variablen,
   die auch `kanal_lib` auswertet. Der Hook konfiguriert sich also aus derselben
   Datei, die dem Projekt die Kanal-Werkzeuge gibt: EINE Stelle pro Projekt.
+- **Pfade:** relativ wird gegen das PROJEKT aufgeloest (nicht gegen den
+  Plugin-Root), `~` wird expandiert; absolut bleibt die Empfehlung.
+- **Defaults:** `KANAL_WER` = `chris,opus,kimi`, `KANAL_MENSCH` = `chris`
+  (explizit gesetzt — niemals `WER[0]`, und die Shell-Umgebung des CLI-
+  Prozesses wird vollstaendig ueberschrieben, damit alte Exports nicht in
+  die Team-Regeln lecken).
 
 ## Ein neues Team einrichten (Rezept, am Beispiel sec-tool)
 
@@ -115,11 +124,16 @@ Opt-in, das zugleich Store und Team konfiguriert).
 - Fail-open: jeder Fehler (Store weg, Import kaputt, Payload unlesbar) → exit 0
   ohne Ausgabe. Der Hook blockiert nie wegen eigener Probleme.
 - Schleifen-Notaus: `Stop` blockiert je Nachrichtenstand, Session UND Store nur
-  EINMAL (Merker in `/tmp/nunaki-kanal-stop-<session>-<store>.json`). Wer die
-  Mahnung ignoriert, wird beim naechsten Stop durchgelassen — kein Endlos-Block.
-  Neue Nachrichten (hoehere `nr`) machen den Block wieder scharf.
+  EINMAL (Merker `/tmp/nunaki-kanal-stop-<hash>.json`, Hash ueber
+  `session\0store`). Wer die Mahnung ignoriert, wird beim naechsten Stop
+  durchgelassen — kein Endlos-Block. Neue Nachrichten (hoehere `nr`) machen den
+  Block wieder scharf; ein zurueckgesetzter Store (kleinere `nr`) verwirft den
+  Merker ebenfalls.
 - Der Hook schreibt NICHTS in den Store (nur `LOCK_SH`-Lesen); Lesemarken setzt
   weiterhin nur `kanal_ungelesen()`/`kanal_lesen()` ueber den MCP-Server.
+- Bekannte Grenze: der Hook liest die komplette `kanal.jsonl` je Event
+  (Vollscan). Fuer Team-grosse Stores (KB bis wenige MB) ist das unhoerbar;
+  bei Starkwachstum waere ein Mtime-Vorcheck die erste Optimierung.
 
 ## Standalone testen
 

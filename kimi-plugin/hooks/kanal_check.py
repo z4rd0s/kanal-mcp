@@ -14,10 +14,14 @@ nur die Threads seines Teams.
 Liest den Kanal-Store DIREKT ueber kanal_lib (kein MCP-Protokoll, kein Schreiben
 am Store). Die Ungelesen-Logik (Teilnahme, Lesemarken, Altformate) wird nicht
 nachgebaut, sondern aus kanal_lib importiert — EINE Stelle, wie im Kanal-Projekt
-ueblich. KANAL_SRC zeigt als Fallback auf das Verzeichnis mit kanal_lib.py;
-normal kommt der Ort aus den args des Projekt-Server-Eintrags. kanal_lib wertet
-KANAL_DIR/KANAL_WER/KANAL_MENSCH beim IMPORT aus — darum setzt der Hook die
-Umgebung VOR dem Import (jeder Hook-Lauf ist ein frischer Prozess).
+ueblich. kanal_lib wertet KANAL_DIR/KANAL_WER/KANAL_MENSCH/KANAL_ICH beim IMPORT
+aus — darum setzt der Hook die Umgebung VOR dem Import, und zwar VOLLSTAENDIG
+(auch loeschen/defaults), damit nichts aus der Shell-Umgebung des CLI-Prozesses
+in die Lib leckt (jeder Hook-Lauf ist ein frischer Prozess).
+
+Pfade in der mcp.json: relativ wird gegen das PROJEKT aufgeloest (das Payload-
+cwd), nie gegen den Plugin-Root; "~" wird expandiert. Absolute Pfade bleiben
+die Empfehlung.
 
 Events (Payload-Feld hook_event_name):
   UserPromptSubmit  Hinweis auf stdout -> landet im Kontext, exit 0 (nie blockieren).
@@ -26,27 +30,28 @@ Events (Payload-Feld hook_event_name):
                     schon_gemeldet): ein Modell, das trotz Block nicht liest, wird
                     beim naechsten Stop durchgelassen statt endlos weiterzulaufen.
 
-Fail-open: JEDER Fehler (Store weg, Import kaputt, Payload muell) -> exit 0 ohne
-Ausgabe. Der Hook blockiert nur, wenn er positiv weiss: Ungelesenes liegt an UND
-fuer genau diesen Stand wurde in dieser Session noch nicht blockiert.
+Fail-open: JEDER Fehler (Store weg, Import kaputt, Payload muell, mcp.json mit
+falschen Typen) -> exit 0 ohne Ausgabe und ohne Traceback. Der Hook blockiert
+nur, wenn er positiv weiss: Ungelesenes liegt an UND fuer genau diesen Stand
+wurde in dieser Session noch nicht blockiert.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
-import re
 import sys
 import tempfile
 from pathlib import Path
 
 KANAL_SRC = os.environ.get("KANAL_SRC") or "/home/chris/workspace/merlin/kanal-daten"
-ICH = (os.environ.get("KANAL_ICH") or "kimi").strip().lower()
+ICH = "kimi"   # fester Fallback — die Shell-Umgebung darf die Identitaet nicht setzen
 
 
 def kanal_server(cwd: str) -> dict | None:
     """Kanal-Server-Eintrag aus <cwd>/.kimi-code/mcp.json — das Opt-in des
     Projekts. None (=> still) bei: kein cwd, keine Datei, kein 'kanal'-Server,
-    kaputtes JSON."""
+    kaputtes JSON, falscher Typ."""
     if not cwd:
         return None
     try:
@@ -57,16 +62,27 @@ def kanal_server(cwd: str) -> dict | None:
         return None
 
 
-def ungelesen(ich: str, src: str, store: str, wer: str | None,
-              mensch: str | None) -> list | None:
+def pfad(p: str, basis: str) -> str:
+    """Absolut machen gegen das PROJEKT (basis = Payload-cwd), nie gegen den
+    Plugin-Root; '~' wird expandiert."""
+    p = os.path.expanduser(p)
+    if os.path.isabs(p):
+        return p
+    return str((Path(basis or "/") / p).resolve())
+
+
+def ungelesen(ich: str, src: str, store: str, wer: str,
+              mensch: str) -> list | None:
     """Ungelesene Nachrichten fuer `ich` aus `store` — None bei jedem Fehler
-    (fail-open). Umgebung VOR dem Import setzen (kanal_lib liest sie einmalig)."""
+    (fail-open). Umgebung VOR dem Import VOLLSTAENDIG setzen: kanal_lib liest
+    sie einmalig beim Import, und ein geerbter Wert aus der Shell (z. B. ein
+    altes export KANAL_MENSCH=...) wuerde sonst still die Teilnahme-Regeln
+    kippen (Router-Rolle, WER[0]-Falle)."""
     try:
         os.environ["KANAL_DIR"] = store
-        if wer:
-            os.environ["KANAL_WER"] = wer
-        if mensch:
-            os.environ["KANAL_MENSCH"] = mensch
+        os.environ["KANAL_WER"] = wer or "chris,opus,kimi"
+        os.environ["KANAL_MENSCH"] = mensch or "chris"
+        os.environ["KANAL_ICH"] = ich
         if src not in sys.path:
             sys.path.insert(0, src)
         import kanal_lib as lib
@@ -76,20 +92,23 @@ def ungelesen(ich: str, src: str, store: str, wer: str | None,
 
 
 def schon_gemeldet(max_nr: int, session: str, store: str) -> bool:
-    """True, wenn fuer diesen Nachrichtenstand in dieser Session schon blockiert
-    wurde. Zustand als Mini-Datei im tmp — Lesefehler heisst 'noch nicht gemeldet'
-    (dann wird eben einmal zu viel blockiert, nie zu wenig). Der Store geht in den
-    Dateinamen ein, damit Teams sich den Merker nicht teilen."""
-    tag = re.sub(r"[^A-Za-z0-9_-]", "_", f"{session}-{store}" or "default")
+    """True nur, wenn fuer GENAU diesen Nachrichtenstand in dieser Session und
+    diesem Store schon blockiert wurde. Merker-Datei gehasht (keine Trennzeichen-
+    Kollisionen zwischen Paaren, keine Ueberlaenge). alt > max_nr heisst: Store
+    wurde zurueckgesetzt — Merker verwerfen, wieder blockieren. Schreiben atomar;
+    Schreibfehler heisst 'noch nicht gemeldet' (einmal zu viel, nie zu wenig)."""
+    tag = hashlib.sha256(f"{session}\0{store}".encode("utf-8")).hexdigest()[:16]
     zustand = Path(tempfile.gettempdir()) / f"nunaki-kanal-stop-{tag}.json"
     try:
         alt = json.loads(zustand.read_text(encoding="utf-8"))
-        if isinstance(alt, dict) and int(alt.get("max_nr", 0)) >= max_nr:
+        if isinstance(alt, dict) and int(alt.get("max_nr", -1)) == max_nr:
             return True
     except Exception:  # noqa: BLE001
         pass
     try:
-        zustand.write_text(json.dumps({"max_nr": max_nr}), encoding="utf-8")
+        tmp = zustand.with_suffix(".tmp")
+        tmp.write_text(json.dumps({"max_nr": max_nr}), encoding="utf-8")
+        tmp.replace(zustand)
     except Exception:  # noqa: BLE001
         pass
     return False
@@ -102,36 +121,43 @@ def main() -> int:
         payload = {}
     if not isinstance(payload, dict):
         payload = {}
-    event = payload.get("hook_event_name", "")
+    try:
+        event = payload.get("hook_event_name", "")
+        cwd = str(payload.get("cwd", "") or "")
+        srv = kanal_server(cwd)
+        if srv is None:
+            return 0                  # Projekt ohne Kanal: lautlos durchwinken
+        env = srv.get("env") if isinstance(srv.get("env"), dict) else {}
+        args = srv.get("args") if isinstance(srv.get("args"), list) else []
+        skript = pfad(str(args[0]), cwd) if args and str(args[0] or "").strip() else ""
+        src = str(Path(skript).parent) if skript else KANAL_SRC
+        roh_dir = env.get("KANAL_DIR")
+        store = pfad(str(roh_dir), cwd) if roh_dir else src
+        ich = str(env.get("KANAL_ICH") or ICH).strip().lower() or ICH
+        wer = str(env.get("KANAL_WER") or "").strip()
+        mensch = str(env.get("KANAL_MENSCH") or "").strip()
 
-    srv = kanal_server(str(payload.get("cwd", "")))
-    if srv is None:
-        return 0                      # Projekt ohne Kanal: lautlos durchwinken
-    env = srv.get("env") or {}
-    args = srv.get("args") or []
-    src = str(Path(args[0]).resolve().parent) if args else KANAL_SRC
-    store = str(env.get("KANAL_DIR") or src)   # kanal_lib-Default: Store neben Skript
-    ich = (env.get("KANAL_ICH") or ICH).strip().lower()
+        msgs = ungelesen(ich, src, store, wer, mensch)
+        if not msgs:
+            return 0                  # nichts ungelesen ODER Fehler: still durchwinken
 
-    msgs = ungelesen(ich, src, store, env.get("KANAL_WER"), env.get("KANAL_MENSCH"))
-    if not msgs:
-        return 0                      # nichts ungelesen ODER Fehler: still durchwinken
+        threads = ", ".join(sorted({str(m.get("thread", "?")) for m in msgs}))
+        if event == "Stop":
+            max_nr = max(int(m.get("nr", 0)) for m in msgs)
+            if schon_gemeldet(max_nr, str(payload.get("session_id", "")), store):
+                return 0              # Schleifen-Notaus: einmal gemahnt reicht
+            sys.stderr.write(
+                f"[kanal] {len(msgs)} ungelesene Nachricht(en) in {threads} — lies sie "
+                f"mit kanal_ungelesen(), bevor du die Runde beendest.\n")
+            return 2
 
-    threads = ", ".join(sorted({str(m.get("thread", "?")) for m in msgs}))
-    if event == "Stop":
-        max_nr = max(int(m.get("nr", 0)) for m in msgs)
-        if schon_gemeldet(max_nr, str(payload.get("session_id", "")), store):
-            return 0                  # Schleifen-Notaus: einmal gemahnt reicht
-        sys.stderr.write(
-            f"[kanal] {len(msgs)} ungelesene Nachricht(en) in {threads} — lies sie "
-            f"mit kanal_ungelesen(), bevor du die Runde beendest.\n")
-        return 2
-
-    # UserPromptSubmit (und jedes andere Event): nur in den Kontext, nie blockieren.
-    sys.stdout.write(
-        f"[kanal] {len(msgs)} ungelesene Nachricht(en) in {threads}. "
-        f"Lies mit kanal_ungelesen() bevor du antwortest.\n")
-    return 0
+        # UserPromptSubmit (und jedes andere Event): nur in den Kontext, nie blockieren.
+        sys.stdout.write(
+            f"[kanal] {len(msgs)} ungelesene Nachricht(en) in {threads}. "
+            f"Lies mit kanal_ungelesen() bevor du antwortest.\n")
+        return 0
+    except Exception:  # noqa: BLE001
+        return 0                      # Fail-open, auch bei Typ-Muell in der mcp.json
 
 
 if __name__ == "__main__":
