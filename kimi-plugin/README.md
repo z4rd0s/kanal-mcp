@@ -54,10 +54,12 @@ ist nirgendwo anders fuer kimi registriert, z. B. benutzerweit):
 - **Kein `kanal`-Server eingetragen → lautlos aussteigen** (exit 0, keine
   Ausgabe). Projekte ohne Kanal bleiben garantiert unberuehrt.
 - **Kanal eingetragen →** Store aus `env.KANAL_DIR` (Default: Verzeichnis des
-  `kanal_mcp.py` aus `args`), Identitaet aus `env.KANAL_ICH`, Team-Liste aus
-  `env.KANAL_WER`, Entscheider aus `env.KANAL_MENSCH` — exakt die Variablen,
-  die auch `kanal_lib` auswertet. Der Hook konfiguriert sich also aus derselben
-  Datei, die dem Projekt die Kanal-Werkzeuge gibt: EINE Stelle pro Projekt.
+  `kanal_mcp.py` aus `args`), Team-Liste aus `env.KANAL_WER`, Entscheider aus
+  `env.KANAL_MENSCH` — exakt die Variablen, die auch `kanal_lib` auswertet.
+  **Identitaet kommt per `--ich` aus dem Aufruf** (kimi-Plugin: `--ich kimi`,
+  Claude Code: `--ich opus`), Fallback `env.KANAL_ICH`; weder/noch → lautloser
+  Ausstieg statt raten. env-Werte, die keine Strings sind (dict/list/Zahl in
+  der mcp.json), werden wie 'fehlend' behandelt — keine Muell-Konfiguration.
 - **Pfade:** relativ wird gegen das PROJEKT aufgeloest (nicht gegen den
   Plugin-Root), `~` wird expandiert; absolut bleibt die Empfehlung.
 - **Defaults:** `KANAL_WER` = `chris,opus,kimi`, `KANAL_MENSCH` = `chris`
@@ -119,10 +121,11 @@ Opt-in, das zugleich Store und Team konfiguriert).
 
 ## Feste Pfade (bewusst absolut)
 
-- `KANAL_SRC` (Default `/home/chris/workspace/merlin/kanal-daten`) ist nur der
-  Fallback, wo `kanal_lib.py` liegt; normal kommt der Ort aus den `args` des
-  Projekt-Eintrags. Kopieren des Servers in andere Projekte waere falsch:
-  eine Quelle, kein Drift.
+- Der Fundort von `kanal_lib.py` kommt aus den `args` des Projekt-Eintrags
+  (Verzeichnis des `kanal_mcp.py`). `KANAL_SRC` (Umgebungsvariable) ist nur
+  ein Test-Override; der eingebaute Default ist LEER (kein Benutzerpfad im
+  oeffentlichen Repo) — ohne `args` steigt der Hook lautlos aus. Kopieren des
+  Servers in andere Projekte waere falsch: eine Quelle, kein Drift.
 - Der merlin-Store bleibt der Default-Kanal (Projekt `~/workspace/merlin`,
   dessen `.kimi-code/mcp.json` ohne `KANAL_DIR` auf den Store neben dem
   Skript zeigt).
@@ -141,9 +144,13 @@ Opt-in, das zugleich Store und Team konfiguriert).
   `session\0store`). Wer die Mahnung ignoriert, wird beim naechsten Stop
   durchgelassen — kein Endlos-Block. Neue Nachrichten (hoehere `nr`) machen den
   Block wieder scharf; ein zurueckgesetzter Store (kleinere `nr`) verwirft den
-  Merker ebenfalls.
+  Merker ebenfalls. Sessions OHNE `session_id` merken nie — sie blockieren
+  jedes Mal (Garantie „nie zu wenig").
 - Der Hook schreibt NICHTS in den Store (nur `LOCK_SH`-Lesen); Lesemarken setzt
   weiterhin nur `kanal_ungelesen()`/`kanal_lesen()` ueber den MCP-Server.
+- Wachtpunkt (opus): bei nr-losen Altbestaenden zaehlt `nr=0` — nach dem ersten
+  Merker-Stand 0 wuerden weitere nr-lose Nachrichten still durchgewinkt;
+  praktisch durch die lib-seitige Umrechnung (Position = Nummer) abgedeckt.
 - Bekannte Grenze: der Hook liest die komplette `kanal.jsonl` je Event
   (Vollscan). Fuer Team-grosse Stores (KB bis wenige MB) ist das unhoerbar;
   bei Starkwachstum waere ein Mtime-Vorcheck die erste Optimierung.

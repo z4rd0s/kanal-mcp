@@ -45,8 +45,16 @@ import sys
 import tempfile
 from pathlib import Path
 
-KANAL_SRC = os.environ.get("KANAL_SRC") or "/home/chris/workspace/merlin/kanal-daten"
-ICH = "kimi"   # fester Fallback — die Shell-Umgebung darf die Identitaet nicht setzen
+KANAL_SRC = os.environ.get("KANAL_SRC") or ""   # leer = nur der args-Weg zaehlt
+                                                # (kein User-Pfad im oeffentlichen Repo)
+
+
+def _str_wert(env: dict, key: str) -> str:
+    """Nur echte Strings uebernehmen — ein dict/list/Zahl-Wert in der mcp.json
+    wird wie 'fehlend' behandelt, statt per str() zu Muell-Identitaet oder
+    Muell-Teamliste zu koersieren (stille Fehlkonfiguration, opus' Gegenroast)."""
+    v = env.get(key)
+    return v.strip() if isinstance(v, str) else ""
 
 
 def kanal_server(cwd: str) -> dict | None:
@@ -115,6 +123,9 @@ def schon_gemeldet(max_nr: int, session: str, store: str) -> bool:
     Kollisionen zwischen Paaren, keine Ueberlaenge). alt > max_nr heisst: Store
     wurde zurueckgesetzt — Merker verwerfen, wieder blockieren. Schreiben atomar;
     Schreibfehler heisst 'noch nicht gemeldet' (einmal zu viel, nie zu wenig)."""
+    if not session:
+        return False     # ID-lose Sessions merken NIE — sonst verschluckt ein
+                         # fremder ID-loser Lauf denselben Store-Stand (opus, nit b)
     tag = hashlib.sha256(f"{session}\0{store}".encode("utf-8")).hexdigest()[:16]
     zustand = Path(tempfile.gettempdir()) / f"nunaki-kanal-stop-{tag}.json"
     try:
@@ -147,13 +158,19 @@ def main() -> int:
             return 0                  # Projekt ohne Kanal: lautlos durchwinken
         env = srv.get("env") if isinstance(srv.get("env"), dict) else {}
         args = srv.get("args") if isinstance(srv.get("args"), list) else []
-        skript = pfad(str(args[0]), cwd) if args and str(args[0] or "").strip() else ""
+        skript = pfad(str(args[0]), cwd) if args and isinstance(args[0], str) \
+            and args[0].strip() else ""
         src = str(Path(skript).parent) if skript else KANAL_SRC
-        roh_dir = env.get("KANAL_DIR")
-        store = pfad(str(roh_dir), cwd) if roh_dir else src
-        ich = flag_ich() or str(env.get("KANAL_ICH") or "").strip().lower() or ICH
-        wer = str(env.get("KANAL_WER") or "").strip()
-        mensch = str(env.get("KANAL_MENSCH") or "").strip()
+        if not src:
+            return 0                  # kein kanal_lib auffindbar: lautlos aussteigen
+        store = pfad(_str_wert(env, "KANAL_DIR"), cwd) if _str_wert(env, "KANAL_DIR") \
+            else src
+        ich = flag_ich() or _str_wert(env, "KANAL_ICH").lower()
+        if not ich:
+            return 0                  # keine Identitaet bestimmbar (weder --ich noch
+                                      # env.KANAL_ICH): nicht raten, lautlos aussteigen
+        wer = _str_wert(env, "KANAL_WER")
+        mensch = _str_wert(env, "KANAL_MENSCH")
 
         msgs = ungelesen(ich, src, store, wer, mensch)
         if not msgs:
