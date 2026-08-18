@@ -7,12 +7,12 @@
   "hooks": [
     {
       "event": "UserPromptSubmit",
-      "command": "python3 ./hooks/kanal_check.py",
+      "command": "python3 ./hooks/kanal_check.py --ich kimi",
       "timeout": 10
     },
     {
       "event": "Stop",
-      "command": "python3 ./hooks/kanal_check.py",
+      "command": "python3 ./hooks/kanal_check.py --ich kimi",
       "timeout": 10
     }
   ],

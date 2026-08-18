@@ -3,10 +3,11 @@
 
 TEAM-MODELL: Es gibt KEINEN globalen Kanal. Ein Kanal = ein Datenverzeichnis
 (kanal.jsonl + gelesen.json), ein Team = ein Projekt. Ob und WO ein Projekt
-einen Kanal hat, steht in dessen eigener <projekt>/.kimi-code/mcp.json
-(Server "kanal"): env.KANAL_DIR waehlt den Store (Default: neben dem
-kanal_mcp.py aus args), env.KANAL_WER die Team-Liste, env.KANAL_ICH die
-eigene Identitaet. Hat das Projekt keinen Kanal-Eintrag, steigt der Hook
+einen Kanal hat, steht in dessen eigener <projekt>/.kimi-code/mcp.json, Fallback
+<projekt>/.mcp.json (Claude Code), Server "kanal": env.KANAL_DIR waehlt den
+Store (Default: neben dem kanal_mcp.py aus args), env.KANAL_WER die Team-Liste.
+Die Identitaet des Fragenden kommt per --ich aus dem Aufruf (kimi-Plugin:
+--ich kimi; Claude Code: --ich opus) — dasselbe Skript dient beide CLIs. Hat das Projekt keinen Kanal-Eintrag, steigt der Hook
 lautlos aus — fremde Sessions bleiben garantiert unberuehrt, und es ist
 unmoeglich, aus Versehen in fremden Threads zu landen: jeder Store enthaelt
 nur die Threads seines Teams.
@@ -49,17 +50,34 @@ ICH = "kimi"   # fester Fallback — die Shell-Umgebung darf die Identitaet nich
 
 
 def kanal_server(cwd: str) -> dict | None:
-    """Kanal-Server-Eintrag aus <cwd>/.kimi-code/mcp.json — das Opt-in des
-    Projekts. None (=> still) bei: kein cwd, keine Datei, kein 'kanal'-Server,
-    kaputtes JSON, falscher Typ."""
+    """Kanal-Server-Eintrag aus <cwd>/.kimi-code/mcp.json, Fallback <cwd>/.mcp.json
+    (Claude-Code-Projekte) — das Opt-in des Projekts. None (=> still) bei: kein
+    cwd, keine Datei, kein 'kanal'-Server, kaputtes JSON, falscher Typ."""
     if not cwd:
         return None
-    try:
-        cfg = json.loads((Path(cwd) / ".kimi-code" / "mcp.json").read_text(encoding="utf-8"))
-        srv = (cfg.get("mcpServers") or {}).get("kanal")
-        return srv if isinstance(srv, dict) else None
-    except Exception:  # noqa: BLE001
-        return None
+    for rel in ((".kimi-code", "mcp.json"), (".mcp.json",)):
+        try:
+            cfg = json.loads((Path(cwd).joinpath(*rel)).read_text(encoding="utf-8"))
+            srv = (cfg.get("mcpServers") or {}).get("kanal")
+            if isinstance(srv, dict):
+                return srv
+        except Exception:  # noqa: BLE001
+            continue
+    return None
+
+
+def flag_ich() -> str | None:
+    """--ich <name> aus der Kommandozeile. Die Identitaet kommt vom AUFRUFENDEN
+    (kimi-Plugin: --ich kimi; Claude-Code-settings.json: --ich opus), nicht aus
+    der Projektdatei — dasselbe Skript dient beide CLIs, und das KANAL_ICH der
+    mcp.json gilt dem MCP-SERVER des Projekts, nicht zwingend diesem Aufruf."""
+    argv = sys.argv[1:]
+    for i, a in enumerate(argv):
+        if a == "--ich" and i + 1 < len(argv):
+            return argv[i + 1].strip().lower() or None
+        if a.startswith("--ich="):
+            return a.split("=", 1)[1].strip().lower() or None
+    return None
 
 
 def pfad(p: str, basis: str) -> str:
@@ -133,7 +151,7 @@ def main() -> int:
         src = str(Path(skript).parent) if skript else KANAL_SRC
         roh_dir = env.get("KANAL_DIR")
         store = pfad(str(roh_dir), cwd) if roh_dir else src
-        ich = str(env.get("KANAL_ICH") or ICH).strip().lower() or ICH
+        ich = flag_ich() or str(env.get("KANAL_ICH") or "").strip().lower() or ICH
         wer = str(env.get("KANAL_WER") or "").strip()
         mensch = str(env.get("KANAL_MENSCH") or "").strip()
 

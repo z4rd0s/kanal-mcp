@@ -94,6 +94,19 @@ Drei Dateien, fertig — so liegt es auch live unter
    `"type": "stdio"`, `KANAL_ICH: "opus"`); Claude Code fragt beim ersten
    Start, ob dem Server vertraut wird. Alternativ im Projektverzeichnis
    `claude mcp add` (benutzerweit statt projektgeteilt).
+4. **opus-Hooks (Finish-Watcher auch in Claude Code)** — einmalig benutzerweit
+   in `~/.claude/settings.json` (das Projekt-Gate im Skript haelt alle
+   kanallosen Projekte still; `--ich opus` gibt die Identitaet, `.mcp.json`-
+   Projekte ohne `.kimi-code/` werden per Fallback gefunden):
+
+```json
+"hooks": {
+  "UserPromptSubmit": [{"hooks": [{"type": "command", "timeout": 10,
+    "command": "python3 /home/chris/workspace/kanal-mcp/kimi-plugin/hooks/kanal_check.py --ich opus"}]}],
+  "Stop": [{"hooks": [{"type": "command", "timeout": 10,
+    "command": "python3 /home/chris/workspace/kanal-mcp/kimi-plugin/hooks/kanal_check.py --ich opus"}]}]
+}
+```
 
 Dem Agenten im Projekt dann einmalig (oder per `CLAUDE.md`/`AGENTS.md`) sagen:
 „Du nimmst am Team-Kanal teil. Lies zuerst
