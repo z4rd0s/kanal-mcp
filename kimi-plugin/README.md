@@ -1,14 +1,17 @@
 # nunaki-kanal
 
-Kimi-Code-Plugin fuer den lokalen Agenten-zu-Agenten-Kanal (chris / opus / kimi).
-Ersetzt in interaktiven Kimi-Sessions den 30-Minuten-Cron: Ungelesenes landet per
-Hook sofort im Kontext, und der Stop-Hook verhindert, dass eine Runde mit
+Kimi-Code-Plugin fuer den lokalen Agenten-zu-Agenten-Kanal. Ersetzt in
+interaktiven Kimi-Sessions den 30-Minuten-Cron: Ungelesenes landet per Hook
+sofort im Kontext, und der Stop-Hook verhindert, dass eine Runde mit
 ungelesenen Nachrichten endet.
 
-**Projekt-sauber:** Das Plugin ist pro Benutzer installiert (gilt fuer alle
-Projekte), feuert aber nur im Nunaki-Projekt — der Hook prueft das `cwd`-Feld der
-Hook-Payload gegen `KANAL_PROJEKTE` und steigt sonst lautlos aus (exit 0, keine
-Ausgabe). Andere Sessions bleiben unberuehrt.
+**Team-Modell — kein globaler Kanal:** Ein Kanal = ein Datenverzeichnis
+(`kanal.jsonl` + `gelesen.json`), ein Team = ein Projekt. Jedes Projekt hat
+seinen eigenen Store mit seinen eigenen Threads und seiner eigenen Team-Liste
+(`KANAL_WER`) — harte Trennung: Es ist unmoeglich, aus Versehen in Threads
+eines anderen Projekts zu landen, denn jeder Store enthaelt nur die Threads
+seines Teams. Derselbe Server-Code (`kanal_mcp.py` + `kanal_lib.py`) bedient
+alle Stores; unterschieden wird nur per Umgebung.
 
 ## Inhalt
 
@@ -16,7 +19,7 @@ Ausgabe). Andere Sessions bleiben unberuehrt.
 nunaki-kanal/
 ├── kimi.plugin.json            Manifest: Hooks + Skill (KEIN MCP, s. unten)
 ├── hooks/
-│   └── kanal_check.py          liest den Store DIREKT (kanal_lib), mit Projekt-Gate
+│   └── kanal_check.py          liest den Store DIREKT (kanal_lib), projektgesteuert
 ├── skills/
 │   └── kanal-etikette/
 │       └── SKILL.md            Etikette (lesen vor antworten, befund-Regel, ANTI-LOOP)
@@ -25,83 +28,112 @@ nunaki-kanal/
 
 ## Installation
 
+Einmalig pro Benutzer (gilt fuer alle Projekte):
+
 ```
 /plugins install /home/chris/workspace/kanal-mcp/kimi-plugin
 /reload
 ```
 
-Danach pruefen: `/plugins info nunaki-kanal` (keine Diagnosen) und einmal kurz
-chatten — bei Ungelesenem muss `[kanal] N ungelesene Nachricht(en) ...` im Kontext
-auftauchen. Eine Installation genuegt fuer alle Projekte (Plugins gelten pro
-Benutzer); laufende Sessions einmal `/reload`.
-
-**MCP-Server lebt projektlokal, NICHT im Plugin:** die Kanal-Werkzeuge kommen aus
-`/home/chris/workspace/merlin/.kimi-code/mcp.json` (projektlokal — nur merlin-
-Sessions haben sie). Die benutzerweite `~/.kimi-code/mcp.json` enthaelt den Server
-bewusst NICHT mehr (keine Doppel-Registrierung, fremde Projekte bleiben sauber).
-Grund fuer keinen MCP-Server im Manifest: `args` mit absoluten Pfaden ausserhalb
-des Plugin-Roots waere unsicher gemaess Plugin-Sicherheitsmodell, und eine
-Server-Kopie im Plugin wuerde driften (`kanal_lib.ROOT` leitet sich aus dem
-Skriptort ab — eine Kopie legte zudem einen zweiten, leeren Store an).
-
-Hinweise:
+Danach pruefen: `/plugins info nunaki-kanal` (keine Diagnosen). Hinweise:
 - Lokale Installationen werden nach `~/.kimi-code/plugins/managed/nunaki-kanal/`
-  kopiert; Aenderungen am Quellverzeichnis wirken erst nach erneutem Installieren.
+  kopiert; Aenderungen am Quellverzeichnis wirken erst nach **erneutem**
+  Installieren.
 - Hooks werden erst nach `/reload` bzw. in neuen Sessions aktiv.
-- Der Etikette-Skill wird NICHT mehr per `sessionStart` in jede Session gedrueckt
+- Der Etikette-Skill wird NICHT per `sessionStart` in jede Session gedrueckt
   (Kontext-Hygiene); er steht bei Bedarf als Skill `kanal-etikette` bereit.
 
-## Projekt-Gate
+## Wie der Hook das Projekt findet (Opt-in pro Projekt)
 
-Default aktiv nur unter `/home/chris/workspace/merlin`. Weitere Projekte
-zulassen (Doppelpunkt-getrennt):
+Der Hook liest bei jedem Event `<cwd>/.kimi-code/mcp.json` (das `cwd` kommt aus
+der Hook-Payload, ist das Projektverzeichnis der Session):
 
+- **Kein `kanal`-Server eingetragen → lautlos aussteigen** (exit 0, keine
+  Ausgabe). Projekte ohne Kanal bleiben garantiert unberuehrt.
+- **Kanal eingetragen →** Store aus `env.KANAL_DIR` (Default: Verzeichnis des
+  `kanal_mcp.py` aus `args`), Identitaet aus `env.KANAL_ICH`, Team-Liste aus
+  `env.KANAL_WER`, Entscheider aus `env.KANAL_MENSCH` — exakt die Variablen,
+  die auch `kanal_lib` auswertet. Der Hook konfiguriert sich also aus derselben
+  Datei, die dem Projekt die Kanal-Werkzeuge gibt: EINE Stelle pro Projekt.
+
+## Ein neues Team einrichten (Rezept, am Beispiel sec-tool)
+
+Drei Dateien, fertig — so liegt es auch live unter
+`/home/chris/workspace/lanbleed/sec-tool/`:
+
+1. **Store anlegen:** `mkdir kanal-daten` im Projekt (+ `/kanal-daten/` in die
+   `.gitignore` des Projekts — Gesprächsdaten gehoeren nicht ins Repo).
+2. **kimi-Seite** — `<projekt>/.kimi-code/mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "kanal": {
+      "command": "python3",
+      "args": ["/home/chris/workspace/merlin/kanal-daten/kanal_mcp.py"],
+      "env": {
+        "KANAL_ICH": "kimi",
+        "KANAL_DIR": "/abs/pfad/zum/projekt/kanal-daten",
+        "KANAL_WER": "chris,kimi,opus"
+      }
+    }
+  }
+}
 ```
-export KANAL_PROJEKTE="/home/chris/workspace/merlin:/home/chris/workspace/anderes"
-```
 
-Leer gesetzt (`KANAL_PROJEKTE=""` mit anschliessend leerer Liste, d.h. nur
-Trenner) deaktiviert das Gate = ueberall aktiv. Fehlendes `cwd` in der Payload
-heisst: still durchwinken.
+3. **opus-Seite (Claude Code)** — `<projekt>/.mcp.json` (gleicher Inhalt, plus
+   `"type": "stdio"`, `KANAL_ICH: "opus"`); Claude Code fragt beim ersten
+   Start, ob dem Server vertraut wird. Alternativ im Projektverzeichnis
+   `claude mcp add` (benutzerweit statt projektgeteilt).
+
+Dem Agenten im Projekt dann einmalig (oder per `CLAUDE.md`/`AGENTS.md`) sagen:
+„Du nimmst am Team-Kanal teil. Lies zuerst
+`/home/chris/workspace/merlin/kanal-daten/ANLEITUNG_AGENT.md` — du bist
+`<NAME>`, der Mensch ist `chris`. Rufe zu Beginn `kanal_ungelesen()` auf."
+
+**Kein** `KANAL_PROJEKTE`-Export, **kein** Plugin-Reinstall pro Projekt noetig
+(aeltere README-Stände: KANAL_PROJEKTE-Gate — ersetzt durch das mcp.json-
+Opt-in, das zugleich Store und Team konfiguriert).
 
 ## Feste Pfade (bewusst absolut)
 
-- MCP-Server: projektlokale `merlin/.kimi-code/mcp.json` zeigt per absolutem
-  `args`-Pfad auf `kanal_mcp.py` im Kanal-Verzeichnis.
-- Hook: `KANAL_SRC` (Default `/home/chris/workspace/merlin/kanal-daten`) sagt dem
-  Hook, wo `kanal_lib.py` liegt; `kanal_lib` findet den Store daneben selbst
-  (`KANAL_DIR` kann uebersteuern, wird normal nicht gebraucht).
-
-Wenn das Kanal-Verzeichnis je umzieht, sind genau diese zwei Stellen anzupassen
-(projektlokale `mcp.json`, `KANAL_SRC`-Default im Hook) — danach Plugin neu
-installieren.
+- `KANAL_SRC` (Default `/home/chris/workspace/merlin/kanal-daten`) ist nur der
+  Fallback, wo `kanal_lib.py` liegt; normal kommt der Ort aus den `args` des
+  Projekt-Eintrags. Kopieren des Servers in andere Projekte waere falsch:
+  eine Quelle, kein Drift.
+- Der merlin-Store bleibt der Default-Kanal (Projekt `~/workspace/merlin`,
+  dessen `.kimi-code/mcp.json` ohne `KANAL_DIR` auf den Store neben dem
+  Skript zeigt).
 
 ## Verhalten der Hooks
 
-| Event | Ungelesenes | Nichts/Fehler/fremdes Projekt |
+| Event | Ungelesenes | Nichts/Fehler/kein Kanal im Projekt |
 |---|---|---|
 | `UserPromptSubmit` | stdout → Kontext, exit 0 | exit 0, still |
 | `Stop` | stderr-Text, exit 2 (blockiert Rundenende) | exit 0, still |
 
 - Fail-open: jeder Fehler (Store weg, Import kaputt, Payload unlesbar) → exit 0
   ohne Ausgabe. Der Hook blockiert nie wegen eigener Probleme.
-- Schleifen-Notaus: `Stop` blockiert je Nachrichtenstand und Session nur EINMAL
-  (Merker in `/tmp/nunaki-kanal-stop-<session>.json`). Wer die Mahnung ignoriert,
-  wird beim naechsten Stop durchgelassen — kein Endlos-Block. Neue Nachrichten
-  (hoehere `nr`) machen den Block wieder scharf.
+- Schleifen-Notaus: `Stop` blockiert je Nachrichtenstand, Session UND Store nur
+  EINMAL (Merker in `/tmp/nunaki-kanal-stop-<session>-<store>.json`). Wer die
+  Mahnung ignoriert, wird beim naechsten Stop durchgelassen — kein Endlos-Block.
+  Neue Nachrichten (hoehere `nr`) machen den Block wieder scharf.
 - Der Hook schreibt NICHTS in den Store (nur `LOCK_SH`-Lesen); Lesemarken setzt
   weiterhin nur `kanal_ungelesen()`/`kanal_lesen()` ueber den MCP-Server.
 
 ## Standalone testen
 
-```
-cd /home/chris/workspace/kanal-mcp/kimi-plugin
-echo '{"hook_event_name":"UserPromptSubmit","cwd":"/home/chris/workspace/merlin"}' | python3 hooks/kanal_check.py
-echo '{"hook_event_name":"Stop","cwd":"/home/chris/workspace/merlin"}'           | python3 hooks/kanal_check.py; echo $?
-echo '{"hook_event_name":"Stop","cwd":"/tmp/fremd"}'                             | python3 hooks/kanal_check.py; echo $?   # Gate: immer still
-```
+Der Hook braucht ein Projekt mit Kanal-Eintrag; Fixtures anlegen:
 
-Ohne `cwd` in der Payload greift das Gate und der Hook ist still — zum Testen
-also immer ein `cwd` unterhalb des Projekts mitgeben. Mit Fixtures statt echtem
-Store: `KANAL_DIR=/tmp/fixture` voranstellen (Verzeichnis mit eigenem
-`kanal.jsonl` + `gelesen.json`).
+```
+mkdir -p /tmp/fix-proj/.kimi-code /tmp/fix-store
+echo '{"mcpServers":{"kanal":{"command":"python3",
+  "args":["/home/chris/workspace/merlin/kanal-daten/kanal_mcp.py"],
+  "env":{"KANAL_ICH":"kimi","KANAL_DIR":"/tmp/fix-store"}}}}' > /tmp/fix-proj/.kimi-code/mcp.json
+echo '{"nr":1,"zeit":"2026-08-18T10:00:00","von":"opus","thread":"t","haltung":"frage","text":"x"}' > /tmp/fix-store/kanal.jsonl
+echo '{}' > /tmp/fix-store/gelesen.json
+cd /home/chris/workspace/kanal-mcp/kimi-plugin
+echo '{"hook_event_name":"UserPromptSubmit","cwd":"/tmp/fix-proj"}' | python3 hooks/kanal_check.py
+echo '{"hook_event_name":"Stop","cwd":"/tmp/fix-proj","session_id":"s1"}' | python3 hooks/kanal_check.py; echo $?
+echo '{"hook_event_name":"Stop","cwd":"/tmp/anderes-ohne-kanal"}'    | python3 hooks/kanal_check.py; echo $?   # still, exit 0
+```
