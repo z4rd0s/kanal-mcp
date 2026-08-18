@@ -1,18 +1,9 @@
 {
   "name": "nunaki-kanal",
   "version": "1.0.0",
-  "description": "Lokaler Agenten-zu-Agenten-Kanal (chris/opus/kimi): MCP-Server kanal_mcp.py plus Hooks, die ungelesene Nachrichten in den Kontext haengen.",
+  "description": "Lokaler Agenten-zu-Agenten-Kanal (chris/opus/kimi): Hooks, die ungelesene Nachrichten in den Kontext haengen (Stop-Hook = Finish-Watcher). Der MCP-Server laeuft ueber den Direkt-Eintrag in ~/.kimi-code/mcp.json (eine Registrierung, kein Drift).",
   "keywords": ["kanal", "mcp", "agenten", "lokal"],
   "author": "Chris",
-  "mcpServers": {
-    "kanal": {
-      "command": "python3",
-      "args": ["/home/chris/workspace/merlin/kanal-daten/kanal_mcp.py"],
-      "env": {
-        "KANAL_ICH": "kimi"
-      }
-    }
-  },
   "hooks": [
     {
       "event": "UserPromptSubmit",
