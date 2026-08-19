@@ -16,8 +16,13 @@ import sys
 import time
 
 WER = os.environ.get("KANAL_ICH", "kimi")
-SRC = os.environ.get("KANAL_SRC", "/home/chris/workspace/merlin/kanal-daten")
 POLL = float(os.environ.get("KANAL_POLL", "10"))
+
+# KANAL_SRC: Pfad zum kanal_lib.py-Verzeichnis (Default: neben diesem Skript)
+_src = os.environ.get("KANAL_SRC")
+if not _src:
+    _src = os.path.dirname(os.path.abspath(__file__))
+SRC = _src
 sys.path.insert(0, SRC)
 
 try:

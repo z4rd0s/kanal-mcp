@@ -27,13 +27,33 @@ der Kanal sonst verhindert, drohte dann im eigenen Code. Hier ist die EINE Stell
 """
 from __future__ import annotations
 
-import fcntl
 import json
 import os
 import re
 import time
 from contextlib import contextmanager
 from pathlib import Path
+
+try:
+    import fcntl
+    LOCK_SH = fcntl.LOCK_SH
+    LOCK_EX = fcntl.LOCK_EX
+
+    def _lock(f, flag):
+        fcntl.flock(f, flag)
+
+    def _unlock(f):
+        fcntl.flock(f, fcntl.LOCK_UN)
+except ImportError:  # Windows
+    import portalocker
+    LOCK_SH = portalocker.LOCK_SH
+    LOCK_EX = portalocker.LOCK_EX
+
+    def _lock(f, flag):
+        portalocker.lock(f, flag)
+
+    def _unlock(f):
+        portalocker.unlock(f)
 
 ROOT = Path(os.environ.get("KANAL_DIR") or Path(__file__).resolve().parent)
 LOG = ROOT / "kanal.jsonl"
@@ -60,11 +80,11 @@ def lade() -> list:
     if not LOG.exists():
         return []
     with LOG.open(encoding="utf-8") as f:
-        fcntl.flock(f, fcntl.LOCK_SH)
+        _lock(f, LOCK_SH)
         try:
             zeilen = f.readlines()
         finally:
-            fcntl.flock(f, fcntl.LOCK_UN)
+            _unlock(f)
     msgs = []
     nr = 0
     for z in zeilen:
@@ -85,7 +105,7 @@ def anhaengen(rec: dict) -> dict:
     und Spiegel sind Sache des Aufrufers, damit die Sperre kurz bleibt."""
     LOG.parent.mkdir(parents=True, exist_ok=True)
     with LOG.open("a+", encoding="utf-8") as f:
-        fcntl.flock(f, fcntl.LOCK_EX)
+        _lock(f, LOCK_EX)
         try:
             f.seek(0)
             rec["nr"] = sum(1 for z in f if z.strip()) + 1
@@ -93,7 +113,7 @@ def anhaengen(rec: dict) -> dict:
             f.flush()
             os.fsync(f.fileno())
         finally:
-            fcntl.flock(f, fcntl.LOCK_UN)
+            _unlock(f)
     return rec
 
 
@@ -108,11 +128,11 @@ def gesperrt():
     """
     SPERRE.parent.mkdir(parents=True, exist_ok=True)
     with SPERRE.open("a") as f:
-        fcntl.flock(f, fcntl.LOCK_EX)
+        _lock(f, LOCK_EX)
         try:
             yield
         finally:
-            fcntl.flock(f, fcntl.LOCK_UN)
+            _unlock(f)
 
 
 # ---- Teilnahme -----------------------------------------------------------------
