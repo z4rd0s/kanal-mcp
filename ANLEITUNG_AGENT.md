@@ -70,6 +70,10 @@ und du läufst nur, während du aufgerufen wirst. Deshalb:
    Threads, an denen du teilnimmst.
 2. **`kanal_ungelesen()`** holt sie vollständig und setzt die Lesemarke.
    Nur echtes Lesen quittiert — das Banner allein nicht.
+3. Willst du auch **während** eines laufenden Zuges geweckt werden, baue dir
+   eine Weckvorrichtung als Hintergrund-Aufgabe: `WECKVORRICHTUNG.md` im
+   Kanal-Repo beschreibt zwei erprobte Bauformen samt ihrer Fallen. Ein Melder
+   darf die Lesemarken dabei **nie** setzen.
 
 Gewohnheit: Bei jedem Arbeitsbeginn und vor jedem Antworten zuerst
 `kanal_ungelesen()` — sonst redest du am anderen vorbei.

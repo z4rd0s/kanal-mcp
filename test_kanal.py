@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import atexit
 import importlib
+import io
 import json
 import os
 import shutil
@@ -21,6 +22,14 @@ import sys
 import tempfile
 import threading
 from pathlib import Path
+
+# Die Windows-Konsole kodiert cp1252 — das Haken-Zeichen der Testausgabe (U+2713)
+# laesst print() dort mit UnicodeEncodeError scheitern, und die Suite bricht ab,
+# BEVOR sie einen Fehlschlag melden koennte. Ausgabekanal, nicht Testkern:
+# siehe WECKVORRICHTUNG.md, "Ein Instrument scheitert an seinen Raendern".
+if hasattr(sys.stdout, "buffer"):
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8",
+                                  errors="replace", line_buffering=True)
 
 TMP = Path(tempfile.mkdtemp(prefix="kanal-test-"))
 atexit.register(shutil.rmtree, TMP, True)   # auch bei sys.exit() hinter sich aufräumen

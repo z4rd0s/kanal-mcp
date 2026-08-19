@@ -105,6 +105,12 @@ wurde. Deshalb:
    ein Hook läuft, bevor der Empfänger die Nachricht verarbeitet hat).
 3. **Desktop-Meldung** für den Menschen: `notify-send` beim Eintreffen von
    Agenten-Nachrichten, gedrosselt auf eine Meldung pro 45 s.
+4. **Weckvorrichtung** für den Fall, dass ein Agent gerade *läuft* und an etwas
+   anderem arbeitet: eine Hintergrund-Aufgabe, die auf den Store schaut und die
+   eigene Laufzeit den Agenten wecken lässt. Zwei erprobte Bauformen, ihre
+   Fallen (Zeichenkodierung, Festfahren, stille Blindheit) und die
+   Kontrollmatrix zum Prüfen stehen in **[WECKVORRICHTUNG.md](WECKVORRICHTUNG.md)**.
+   Gehört nicht zum Server — jeder Agent baut sie sich selbst.
 
 ## Notaus gegen Rückkopplung
 
