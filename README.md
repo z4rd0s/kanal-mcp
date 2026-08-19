@@ -112,6 +112,47 @@ wurde. Deshalb:
    Kontrollmatrix zum Prüfen stehen in **[WECKVORRICHTUNG.md](WECKVORRICHTUNG.md)**.
    Gehört nicht zum Server — jeder Agent baut sie sich selbst.
 
+   Konkrete Bauform bei kimi (`kanal_watcher.py`): ein Hintergrundprozess,
+   der pollt, die neuen Nachrichten druckt und sich mit exit 0 BEENDET — die
+   Completion-Notification des Hintergrund-Tasks ist der Wecker, kein Cron mit
+   Leerlauf-Turns. `lib.ungelesen()` ist dabei read-only: die Lesemarke rückt
+   erst, wenn der Agent wirklich liest. Konfiguration:
+   `KANAL_ICH` (wen betrifft es) · `KANAL_SRC` (kanal_lib-Verzeichnis) ·
+   `KANAL_DIR` (Store-Ort) · `KANAL_POLL` (Sekunden zwischen Prüfungen).
+   Betriebsdisziplin: **Re-Arm zuerst** — nach jeder Watcher-Meldung ist der
+   erste Schritt der Neustart des Hintergrund-Tasks; ein vergessener Re-Arm
+   bedeutet stille Zustellung. Watcher + Hooks ergänzen sich: die Hooks des
+   `kimi-plugin` decken aktive Züge ab (UserPromptSubmit/Stop), der Watcher
+   den Leerlauf.
+   - Der Watcher konsumiert nichts: Marken-Setzen bleibt dem Agenten-Zug
+     (`kanal_ungelesen`/`kanal_lesen`) vorbehalten.
+
+   **Konkrete Erst-Umsetzung (kimi, Projekt sec-tool, 2026-08-18):** Der erste
+   produktive Watcher war ein bash-Skript neben dem Store (`kanal-daten/watch.sh`,
+   gitignored) — Zeilenzähler-Diff auf `kanal.jsonl`, neue Zeilen per
+   `grep -E '"von": *"(opus|chris)"'` auf fremde Absender filtern (eigene Zeilen
+   triggern nie), Treffer → Meldung + exit 0:
+   ```bash
+   last=$(wc -l < kanal.jsonl)
+   while true; do
+     cur=$(wc -l < kanal.jsonl)
+     if [ "$cur" -gt "$last" ]; then
+       if tail -n +$((last+1)) kanal.jsonl | grep -qE '"von": *"(opus|chris)"'; then
+         echo "KANAL: neue Nachricht(en) von opus/chris"; exit 0
+       fi
+       last=$cur
+     fi
+     sleep 5
+   done
+   ```
+   Gestartet als Kimi-Code-Hintergrund-Task ohne Timeout — die Completion-
+   Notification weckt den Agenten mit dem Inhalt. Verzögerung opus→kimi im
+   Betrieb: ≤ 5 Sekunden, bei null Leerlauf-Turns. Die bash-Variante setzt auf
+   das JSON-Format (`"von": "…"` mit Leerzeichen) — `kanal_watcher.py` über
+   `kanal_lib` ist der robustere, kanonische Weg; das bash-Skript dokumentiert
+   das minimale Prinzip: **beende dich, wenn etwas Neues da ist — das Beenden
+   ist die Benachrichtigung.**
+
 ## Notaus gegen Rückkopplung
 
 Zwei ereignisgetriebene Agenten am selben Medium können sich gegenseitig
@@ -132,7 +173,8 @@ KANAL_MAX_GESAMT=40       über alle Threads
 
 Voraussetzungen: Python ≥ 3.10, `pip install mcp` (das offizielle
 [MCP-Python-SDK](https://github.com/modelcontextprotocol/python-sdk); alles
-andere ist Stdlib). Linux/macOS (nutzt `fcntl.flock`).
+andere ist Stdlib). Linux/macOS nativ (`fcntl.flock`); unter Windows fällt die
+Dateisperre auf `portalocker` zurück (`pip install portalocker`).
 
 **Claude Code** (je Agent, mit eigenem Namen):
 
@@ -189,6 +231,7 @@ Regeln und die Erwartung, zuerst `kanal_ungelesen()` zu rufen.
 | `kanal` | CLI mit denselben Regeln — für Menschen im Terminal und `!`-Prompts (`neu --mit a,b`, `beitreten`, `verlassen`) |
 | `kanal_folgen.py` | Mitlesen: Rückblick + live (`--einmal`, `--thread`, `--offen`); schreibt mit `--markdown` einen Spiegel `KANAL.md` zum Mitlesen im Editor |
 | `kanal_ping.py` | der Hook-/Benachrichtigungs-Zusteller (markiert **nicht** als gelesen) |
+| `kanal_watcher.py` | Push-Ersatz für Kimi Code: blockiert bis Ungelesenes da ist, druckt, exit 0 — als Hintergrund-Task weckt die Completion den Agenten (s. „Zustellung ohne Push" Nr. 4) |
 | `kanal_chat.py` | minimaler Web-Chatclient für den Menschen (`python3 kanal_chat.py 8137`) |
 | `test_kanal.py` | Regressionstests (`python3 test_kanal.py`) — laufen in einem temporären `KANAL_DIR`, rühren echte Daten nie an |
 
