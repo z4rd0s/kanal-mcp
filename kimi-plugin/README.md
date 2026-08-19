@@ -157,6 +157,20 @@ Opt-in, das zugleich Store und Team konfiguriert).
   (Vollscan). Fuer Team-grosse Stores (KB bis wenige MB) ist das unhoerbar;
   bei Starkwachstum waere ein Mtime-Vorcheck die erste Optimierung.
 
+## Token-Hygiene (20.08., nach Chris' Verbrauchsanalyse)
+
+- **Server:** alle Werkzeuge antworten mit `structured_output=False` — die MCP-
+  SDK haengt sonst an jede Antwort ein `structuredContent`-JSON-Echo, das im
+  Agenten-Kontext doppelt so viele Tokens kostet wie der Klartext. Wirkt ab
+  dem naechsten Server-Start (neue Session).
+- **Hook:** der erzwungene Volltext-Read (Stop-Block) wird pro Stand nur noch
+  EINMAL global vergeben (Merker `nunaki-kanal-stop-global-<storehash>`) —
+  parallele Instanzen desselben Agenten sehen weiterhin die passive Ein-Zeilen-
+  Notiz, aber nur die erste Session wird zum Lesen gezwungen. Kein 4x-Lesen
+  derselben Nachrichten mehr.
+- **Etikette:** Befunde kurz halten (~800 Zeichen) — die Zahl und Quelle
+  bleiben, die Prosa geht.
+
 ## Standalone testen
 
 Der Hook braucht ein Projekt mit Kanal-Eintrag; Fixtures anlegen:

@@ -268,7 +268,7 @@ def mit_banner(fn):
     return huelle
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 @mit_banner
 def kanal_ungelesen() -> str:
     """Alle Nachrichten seit dem letzten Lesen, dann Lesemarke setzen.
@@ -292,7 +292,7 @@ def kanal_ungelesen() -> str:
     return kopf + "\n\n" + "\n\n".join(f"[{m['thread']}] " + lib.fmt(m) for m in u)
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 @mit_banner
 def kanal_offen() -> str:
     """Offene Threads mit ihrer Frage, ihren Teilnehmern und der letzten Nachricht.
@@ -323,7 +323,7 @@ def kanal_offen() -> str:
     return "\n\n".join(out)
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 @mit_banner
 def kanal_lesen(thread: str = "", letzte: int = 0) -> str:
     """Verlauf lesen. thread leer = alle Threads. letzte=N begrenzt auf die N neuesten
@@ -344,7 +344,7 @@ def kanal_lesen(thread: str = "", letzte: int = 0) -> str:
     return kopf + "\n\n" + "\n\n".join(lib.fmt(m) for m in sel)
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 @mit_banner
 def kanal_neu(von: str, thread: str, frage: str, teilnehmer: str = "") -> str:
     """Neuen Thread eröffnen. `von` ist einer der Teilnehmer (KANAL_WER) und muss zu
@@ -380,7 +380,7 @@ def kanal_neu(von: str, thread: str, frage: str, teilnehmer: str = "") -> str:
     return f"Thread '{thread}' eröffnet — {kreis}." + _warnung_identitaet()
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 @mit_banner
 def kanal_sagen(von: str, thread: str, haltung: str, text: str) -> str:
     """In einem Thread antworten. Nur Teilnehmer des Threads duerfen schreiben —
@@ -422,7 +422,7 @@ def kanal_sagen(von: str, thread: str, haltung: str, text: str) -> str:
     return f"{von} → '{thread}' ({haltung}) abgelegt.{zugabe}" + _warnung_identitaet()
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 @mit_banner
 def kanal_beitreten(thread: str) -> str:
     """Einem Thread beitreten: danach bekommst du seine Nachrichten als ungelesen
@@ -443,7 +443,7 @@ def kanal_beitreten(thread: str) -> str:
     return f"{ICH} ist '{thread}' beigetreten."
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 @mit_banner
 def kanal_verlassen(thread: str) -> str:
     """Einen Thread verlassen: keine ungelesenen Meldungen mehr aus diesem Thema.
@@ -467,7 +467,7 @@ def kanal_verlassen(thread: str) -> str:
     return f"{ICH} hat '{thread}' verlassen — Zustellung stoppt, Lesen bleibt moeglich."
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 @mit_banner
 def kanal_zu(thread: str, entscheidung: str) -> str:
     """Thread schliessen. Nur fuer die Entscheider-Rolle (KANAL_MENSCH) — geprueft wird

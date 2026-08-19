@@ -117,16 +117,9 @@ def ungelesen(ich: str, src: str, store: str, wer: str,
         return None
 
 
-def schon_gemeldet(max_nr: int, session: str, store: str) -> bool:
-    """True nur, wenn fuer GENAU diesen Nachrichtenstand in dieser Session und
-    diesem Store schon blockiert wurde. Merker-Datei gehasht (keine Trennzeichen-
-    Kollisionen zwischen Paaren, keine Ueberlaenge). alt > max_nr heisst: Store
-    wurde zurueckgesetzt — Merker verwerfen, wieder blockieren. Schreiben atomar;
-    Schreibfehler heisst 'noch nicht gemeldet' (einmal zu viel, nie zu wenig)."""
-    if not session:
-        return False     # ID-lose Sessions merken NIE — sonst verschluckt ein
-                         # fremder ID-loser Lauf denselben Store-Stand (opus, nit b)
-    tag = hashlib.sha256(f"{session}\0{store}".encode("utf-8")).hexdigest()[:16]
+def _marker(max_nr: int, tag: str) -> bool:
+    """Gemeinsame Merker-Logik (Session- UND Global-Merker): True, wenn fuer
+    genau diesen Stand schon gemeldet wurde; alt > max_nr heisst Store-Reset."""
     zustand = Path(tempfile.gettempdir()) / f"nunaki-kanal-stop-{tag}.json"
     try:
         alt = json.loads(zustand.read_text(encoding="utf-8"))
@@ -141,6 +134,21 @@ def schon_gemeldet(max_nr: int, session: str, store: str) -> bool:
     except Exception:  # noqa: BLE001
         pass
     return False
+
+
+def schon_gemeldet(max_nr: int, session: str, store: str) -> bool:
+    """True, wenn dieser Stand in dieser Session (oder GLOBAL schon in einer
+    anderen Session — Mehrfach-Zwangsglesen desselben Stands durch parallele
+    Instanzen ist der Token-Fresser) schon blockiert hat. Die passive Ein-Zeilen-
+    Notiz bei UserPromptSubmit bleibt allen Sessions; der ERZWUNGENE Volltext
+    geht nur an die erste Session je Stand. Session ohne ID merkt nie."""
+    if not session:
+        return False
+    kern = hashlib.sha256(store.encode("utf-8")).hexdigest()[:16]
+    session_tag = hashlib.sha256(f"{session}\0{store}".encode("utf-8")).hexdigest()[:16]
+    if _marker(max_nr, session_tag):
+        return True
+    return _marker(max_nr, f"global-{kern}")
 
 
 def main() -> int:
