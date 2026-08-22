@@ -18,10 +18,31 @@ import time
 WER = os.environ.get("KANAL_ICH", "kimi")
 POLL = float(os.environ.get("KANAL_POLL", "10"))
 
-# KANAL_SRC: Pfad zum kanal_lib.py-Verzeichnis (Default: neben diesem Skript)
-_src = os.environ.get("KANAL_SRC")
-if not _src:
-    _src = os.path.dirname(os.path.abspath(__file__))
+# Store-Aufloesung wie im Plugin-Hook: erst die Projekt-mcp.json (die MCP-
+# Werkzeuge der Session zeigen auf denselben Eintrag), dann env, zuletzt der
+# Skriptort. Bug 22.08.: der Repo-Default las einen LEEREN Repo-Store, waehrend
+# die Werkzeuge im Live-Store arbeiteten — Watcher schwieg stundenlang.
+import json as _json
+
+def _projekt_store():
+    try:
+        cwd = os.getcwd()
+        for rel in ((".kimi-code", "mcp.json"), (".mcp.json",)):
+            cfg = _json.load(open(os.path.join(cwd, *rel), encoding="utf-8"))
+            srv = (cfg.get("mcpServers") or {}).get("kanal")
+            if isinstance(srv, dict):
+                env = srv.get("env") if isinstance(srv.get("env"), dict) else {}
+                args = srv.get("args") if isinstance(srv.get("args"), list) else []
+                src = os.path.dirname(args[0]) if args and isinstance(args[0], str) else None
+                return env.get("KANAL_DIR"), src
+    except Exception:  # noqa: BLE001 — kein Projekt-Eintrag = Fallback
+        pass
+    return None, None
+
+_pdir, _psrc = _projekt_store()
+_src = os.environ.get("KANAL_SRC") or _psrc or os.path.dirname(os.path.abspath(__file__))
+if _pdir and not os.environ.get("KANAL_DIR"):
+    os.environ["KANAL_DIR"] = _pdir
 SRC = _src
 sys.path.insert(0, SRC)
 
